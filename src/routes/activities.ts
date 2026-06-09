@@ -1,4 +1,4 @@
-import { db } from '../db.ts';
+import { db } from '../db';
 import { Router } from 'express';
 import { createId } from '@paralleldrive/cuid2';
 

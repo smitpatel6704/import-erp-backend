@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db } from '../db.ts';
+import { db } from '../db';
 import { createId } from '@paralleldrive/cuid2';
 
 const router = Router();
