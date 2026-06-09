@@ -1,5 +1,5 @@
-  import app from './app';
-import { ensureShipmentTrackingColumns, maerskScraperMode, startShipmentTrackingScheduler } from './services/tracking';
+import app from './app.ts';
+import { ensureShipmentTrackingColumns, maerskScraperMode, startShipmentTrackingScheduler } from './services/tracking.ts';
 
 const PORT = process.env.PORT || 5001;
 

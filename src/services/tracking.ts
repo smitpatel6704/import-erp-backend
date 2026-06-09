@@ -1,6 +1,6 @@
 import { createId } from '@paralleldrive/cuid2';
 import { chromium } from 'playwright-core';
-import { db } from '../db';
+import { db } from '../db.ts';
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const MSC_TRACKING_PAGE = 'https://www.msc.com/en/track-a-shipment';
