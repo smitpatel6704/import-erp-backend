@@ -1,5 +1,9 @@
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const srcApiDir = path.join(__dirname, '../frontend/src/app/api');
 const destRoutesDir = path.join(__dirname, 'src/routes');
@@ -21,7 +25,7 @@ function processDir(currentPath, routePath) {
       
       // Convert Next.js to Express
       content = content.replace(/import\s+{\s*NextResponse\s*}\s+from\s+['"]next\/server['"];?\n?/g, '');
-      content = content.replace(/import\s+{\s*db\s*}\s+from\s+['"]@\/lib\/db['"];?/g, "import { db } from '../db';\nimport { Router } from 'express';\n\nconst router = Router();\n");
+      content = content.replace(/import\s+{\s*db\s*}\s+from\s+['"]@\/lib\/db['"];?/g, "import { db } from '../db.js';\nimport { Router } from 'express';\n\nconst router = Router();\n");
       
       // Replace GET, POST, PUT, DELETE
       const methods = ['GET', 'POST', 'PUT', 'DELETE'];
@@ -61,11 +65,11 @@ function processDir(currentPath, routePath) {
       const routeName = routePath.replace(/\[id\]/g, ':id');
       const filename = routePath.replace(/\/\[id\]/g, '_id').replace(/\//g, '_');
       
-      const destPath = path.join(destRoutesDir, `${filename || 'index'}.ts`);
+      const destPath = path.join(destRoutesDir, `${filename || 'index'}.js`);
       
       // If we are merging routes from [id]/route.ts into the main route file, we should combine them.
       const mainRouteName = routePath.split('/')[0];
-      const mainDestPath = path.join(destRoutesDir, `${mainRouteName || 'index'}.ts`);
+      const mainDestPath = path.join(destRoutesDir, `${mainRouteName || 'index'}.js`);
       
       if (fs.existsSync(mainDestPath)) {
         let existing = fs.readFileSync(mainDestPath, 'utf8');
@@ -89,7 +93,7 @@ processDir(srcApiDir, '');
 
 console.log('Routes generated:', routes);
 
-// Generate index.ts
+// Generate index.js
 const indexContent = `import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -99,7 +103,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-${routes.filter(r => r).map(r => `import ${r}Router from './routes/${r}';`).join('\n')}
+${routes.filter(r => r).map(r => `import ${r}Router from './routes/${r}.js';`).join('\n')}
 
 ${routes.filter(r => r).map(r => `app.use('/api/${r}', ${r}Router);`).join('\n')}
 
@@ -109,10 +113,10 @@ app.listen(PORT, () => {
 });
 `;
 
-fs.writeFileSync(path.join(__dirname, 'src/index.ts'), indexContent);
+fs.writeFileSync(path.join(__dirname, 'src/index.js'), indexContent);
 
-// Generate db.ts
+// Generate db.js
 const dbContent = `import { PrismaClient } from '@prisma/client';\n\nexport const db = new PrismaClient();\n`;
-fs.writeFileSync(path.join(__dirname, 'src/db.ts'), dbContent);
+fs.writeFileSync(path.join(__dirname, 'src/db.js'), dbContent);
 
 console.log('Done!');
