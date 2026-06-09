@@ -1,0 +1,41 @@
+.vercel
+node_modules/
+dist/
+build/
+bin/
+obj/
+*.o
+*.obj
+*.out
+*.exe
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.lo
+*.la
+*.dSYM/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# Prisma
+prisma/dev.db
+node_modules/.prisma
+
+# Uploads
+uploads/

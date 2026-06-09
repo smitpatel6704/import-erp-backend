@@ -1,0 +1,404 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id            String         @id @default(cuid())
+  email         String         @unique
+  name          String
+  password      String
+  avatar        String?
+  role          String         @default("user")
+  department    String?
+  phone         String?
+  isActive      Boolean        @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  activities    Activity[]
+  notifications Notification[]
+}
+
+model Company {
+  id              String        @id @default(cuid())
+  name            String
+  contactPerson   String?
+  mobile          String?
+  email           String?
+  officeAddress   String?
+  gstNumber       String?
+  iecCode         String?
+  panNumber       String?
+  bankName        String?
+  bankAccount     String?
+  bankIfsc        String?
+  billingAddress  String?
+  shippingAddress String?
+  creditLimit     Float         @default(0)
+  isActive        Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  invoices        Invoice[]
+  products        Product[]
+  shipments       Shipment[]
+  transactions    Transaction[]
+}
+
+model Product {
+  id              String         @id @default(cuid())
+  name            String
+  category        String?
+  hsCode          String?
+  sku             String?
+  brandName       String?
+  unitType        String         @default("PCS")
+  countryOfOrigin String?
+  companyId       String?
+  isActive        Boolean        @default(true)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  company         Company?       @relation(fields: [companyId], references: [id])
+  shipmentItems   ShipmentItem[]
+
+  @@index([companyId])
+}
+
+model Shipment {
+  id                String            @id @default(cuid())
+  shipmentNumber    String            @unique
+  bookingNumber     String?
+  blNumber          String?
+  shippingLine      String?
+  freightForwarder  String?
+  vesselName        String?
+  voyageNumber      String?
+  etd               DateTime?
+  eta               DateTime?
+  actualArrival     DateTime?
+  originCountry     String?
+  originPort        String?
+  destinationPort   String?
+  warehouseLocation String?
+  deliveryAddress   String?
+  priority          String            @default("normal")
+  status            String            @default("draft")
+  shipmentValue     Float             @default(0)
+  currency          String            @default("USD")
+  companyId         String?
+  tags              String?
+  internalNotes     String?
+  isActive          Boolean           @default(true)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  exporterCompany   String?           @db.VarChar(255)
+  exporterCompanyId String?
+  containers        Container[]
+  customsClearance  CustomsClearance?
+  documents         Document[]
+  expenses          Expense[]
+  invoices          Invoice[]
+  logistics         Logistics[]
+  company           Company?          @relation(fields: [companyId], references: [id])
+  shipmentItems     ShipmentItem[]
+  timelineEvents    TimelineEvent[]
+  shipmentDocuments ShipmentDocument[]
+
+  @@index([companyId])
+}
+
+model ShipmentItem {
+  id          String   @id @default(cuid())
+  shipmentId  String
+  productId   String?
+  description String?
+  quantity    Int      @default(0)
+  unitPrice   Float    @default(0)
+  currency    String   @default("USD")
+  grossWeight Float    @default(0)
+  netWeight   Float    @default(0)
+  cbmVolume   Float    @default(0)
+  packingType String?
+  product     Product? @relation(fields: [productId], references: [id])
+  shipment    Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([shipmentId])
+}
+
+model TimelineEvent {
+  id          String   @id @default(cuid())
+  shipmentId  String
+  event       String
+  description String?
+  location    String?
+  timestamp   DateTime @default(now())
+  shipment    Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId])
+}
+
+model Container {
+  id              String    @id @default(cuid())
+  containerNumber String
+  containerType   String    @default("standard")
+  containerSize   String    @default("20ft")
+  sealNumber      String?
+  stuffingType    String?
+  weightCapacity  Float     @default(0)
+  currentWeight   Float     @default(0)
+  status          String    @default("at_pol")
+  currentLocation String?
+  latitude        Float?
+  longitude       Float?
+  shipmentId      String
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  shipment        Shipment  @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  expenses        Expense[]
+
+  @@index([shipmentId])
+}
+
+model Expense {
+  id            String     @id @default(cuid())
+  category      String
+  description   String?
+  amount        Float
+  currency      String     @default("USD")
+  exchangeRate  Float      @default(1)
+  amountBase    Float      @default(0)
+  vendorName    String?
+  paymentStatus String     @default("pending")
+  paymentDate   DateTime?
+  dueDate       DateTime?
+  shipmentId    String?
+  containerId   String?
+  invoiceNumber String?
+  isActive      Boolean    @default(true)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  container     Container? @relation(fields: [containerId], references: [id])
+  shipment      Shipment?  @relation(fields: [shipmentId], references: [id])
+
+  @@index([containerId])
+  @@index([shipmentId])
+}
+
+model Transaction {
+  id              String   @id @default(cuid())
+  type            String
+  category        String
+  amount          Float
+  currency        String   @default("USD")
+  description     String?
+  referenceNumber String?
+  companyId       String?
+  invoiceId       String?
+  paymentMethod   String?
+  transactionDate DateTime @default(now())
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  company         Company? @relation(fields: [companyId], references: [id])
+
+  @@index([companyId])
+}
+
+model Invoice {
+  id            String        @id @default(cuid())
+  invoiceNumber String        @unique
+  invoiceType   String        @default("commercial")
+  status        String        @default("draft")
+  issueDate     DateTime      @default(now())
+  dueDate       DateTime?
+  subtotal      Float         @default(0)
+  taxAmount     Float         @default(0)
+  totalAmount   Float         @default(0)
+  currency      String        @default("USD")
+  paidAmount    Float         @default(0)
+  companyId     String?
+  shipmentId    String?
+  notes         String?
+  terms         String?
+  isActive      Boolean       @default(true)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  company       Company?      @relation(fields: [companyId], references: [id])
+  shipment      Shipment?     @relation(fields: [shipmentId], references: [id])
+  items         InvoiceItem[]
+
+  @@index([companyId])
+  @@index([shipmentId])
+}
+
+model InvoiceItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  description String
+  quantity    Int     @default(1)
+  unitPrice   Float   @default(0)
+  discount    Float   @default(0)
+  taxRate     Float   @default(0)
+  total       Float   @default(0)
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+model Document {
+  id           String    @id @default(cuid())
+  name         String
+  documentType String
+  fileUrl      String
+  fileType     String?
+  fileSize     Int?
+  shipmentId   String?
+  expiryDate   DateTime?
+  uploadedBy   String?
+  tags         String?
+  isVerified   Boolean   @default(false)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  shipment     Shipment? @relation(fields: [shipmentId], references: [id])
+
+  @@index([shipmentId])
+}
+
+model CustomsClearance {
+  id              String    @id @default(cuid())
+  shipmentId      String    @unique
+  chaName         String?
+  chaContact      String?
+  assessmentValue Float     @default(0)
+  dutyAmount      Float     @default(0)
+  dutyStatus      String    @default("pending")
+  clearanceStatus String    @default("document_submission")
+  customsRemarks  String?
+  assessmentDate  DateTime?
+  paymentDate     DateTime?
+  clearanceDate   DateTime?
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  shipment        Shipment  @relation(fields: [shipmentId], references: [id])
+}
+
+model Logistics {
+  id              String    @id @default(cuid())
+  shipmentId      String
+  type            String    @default("transport")
+  driverName      String?
+  driverPhone     String?
+  vehicleNumber   String?
+  transportVendor String?
+  routeFrom       String?
+  routeTo         String?
+  dispatchDate    DateTime?
+  deliveryDate    DateTime?
+  podStatus       String    @default("pending")
+  warehouseEntry  DateTime?
+  offloadDate     DateTime?
+  storageDays     Int       @default(0)
+  status          String    @default("scheduled")
+  notes           String?
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  shipment        Shipment  @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String?
+  title     String
+  message   String
+  type      String   @default("info")
+  category  String   @default("system")
+  isRead    Boolean  @default(false)
+  actionUrl String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  details   String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model ExporterCompany {
+  id            String    @id
+  name          String
+  contactPerson String?
+  mobile        String?
+  email         String?
+  address       String?   @db.Text
+  country       String?
+  isActive      Boolean?  @default(true)
+  createdAt     DateTime? @default(now())
+  updatedAt     DateTime? @default(now())
+}
+
+model SettingOption {
+  id        String    @id
+  category  String    @db.VarChar(50)
+  value     String    @db.VarChar(100)
+  label     String    @db.VarChar(100)
+  isActive  Boolean?  @default(true)
+  createdAt DateTime? @default(now())
+}
+
+model DocumentChecklist {
+  id                String   @id @default(cuid())
+  name              String
+  isRequired        Boolean  @default(false)
+  shipmentStage     String?  // booking, arrival, clearance, delivery
+  expiryRequired    Boolean  @default(false)
+  allowedFileTypes  String?  // pdf,image,excel,word
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  shipmentDocuments ShipmentDocument[]
+}
+
+model ShipmentDocument {
+  id               String   @id @default(cuid())
+  shipmentId       String
+  checklistId      String
+  fileUrl          String?
+  fileType         String?
+  fileSize         Int?
+  status           String   @default("pending") // pending, uploaded, verified, rejected, expired
+  uploadedAt       DateTime?
+  verifiedAt       DateTime?
+  rejectedReason   String?
+  expiryDate       DateTime?
+  createdBy        String?
+  remarks          String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  shipment         Shipment          @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  checklist        DocumentChecklist @relation(fields: [checklistId], references: [id])
+}
