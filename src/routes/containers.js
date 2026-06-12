@@ -48,12 +48,12 @@ router.put('/:id', async (req, res) => {
       UPDATE Container SET
         containerNumber = ?, containerType = ?, containerSize = ?, sealNumber = ?,
         stuffingType = ?, weightCapacity = ?, currentWeight = ?, status = ?,
-        currentLocation = ?, latitude = ?, longitude = ?, isActive = ?, updatedAt = NOW()
+        currentLocation = ?, latitude = ?, longitude = ?, goodsDescription = ?, isActive = ?, updatedAt = NOW()
       WHERE id = ?
     `, [
             body.containerNumber, body.containerType, body.containerSize, body.sealNumber,
             body.stuffingType, body.weightCapacity, body.currentWeight, body.status,
-            body.currentLocation, body.latitude, body.longitude, body.isActive, id
+            body.currentLocation, body.latitude, body.longitude, body.goodsDescription, body.isActive, id
         ]);
         const updated = await db.query('SELECT * FROM Container WHERE id = ?', [id]);
         return res.json({ data: updated[0] });
@@ -180,13 +180,13 @@ router.post('/', async (req, res) => {
       INSERT INTO Container (
         id, containerNumber, containerType, containerSize, sealNumber, stuffingType,
         weightCapacity, currentWeight, status, currentLocation, latitude, longitude,
-        shipmentId, isActive
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        shipmentId, goodsDescription, isActive
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
             id, body.containerNumber, body.containerType || 'standard', body.containerSize || '20ft',
             body.sealNumber || null, body.stuffingType || null, body.weightCapacity || 0,
             body.currentWeight || 0, body.status || 'at_pol', body.currentLocation || null,
-            body.latitude || null, body.longitude || null, body.shipmentId,
+            body.latitude || null, body.longitude || null, body.shipmentId, body.goodsDescription || null,
             body.isActive !== undefined ? (body.isActive ? 1 : 0) : 1
         ]);
         const newContainer = await db.query('SELECT * FROM Container WHERE id = ?', [id]);

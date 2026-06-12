@@ -4,6 +4,8 @@ import { createId } from '@paralleldrive/cuid2';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { PDFDocument } from 'pdf-lib';
+import { createNotification, notificationRecipients } from '../services/notifications.js';
 const router = Router();
 // Configure Multer for local storage
 const storage = multer.diskStorage({
@@ -22,6 +24,88 @@ const storage = multer.diskStorage({
 const upload = multer({
     storage: storage,
     limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
+router.get('/pending', async (req, res) => {
+    try {
+        const shipmentId = req.query.shipmentId || '';
+        const params = [];
+        let shipmentFilter = '';
+        if (shipmentId) {
+            shipmentFilter = 'AND s.id = ?';
+            params.push(shipmentId);
+        }
+        const rows = await db.query(`
+          SELECT s.id as shipmentId, s.shipmentNumber, s.eta,
+                 dc.id as checklistId, dc.name, dc.shipmentStage, dc.isRequired,
+                 sd.id as documentId, COALESCE(sd.status, 'pending') as status,
+                 sd.rejectedReason, sd.expiryDate
+          FROM Shipment s
+          CROSS JOIN DocumentChecklist dc
+          LEFT JOIN ShipmentDocument sd ON sd.shipmentId = s.id AND sd.checklistId = dc.id
+          WHERE s.isActive = 1 AND dc.isActive = 1
+            AND (sd.id IS NULL OR sd.status IN ('pending', 'rejected', 'expired'))
+            ${shipmentFilter}
+          ORDER BY s.eta ASC NULLS LAST, s.shipmentNumber, dc.name
+        `, params);
+        return res.json({ data: rows });
+    }
+    catch (error) {
+        return res.status(500).json({ error: String(error) });
+    }
+});
+router.get('/shipment/:id/bundles', async (req, res) => {
+    try {
+        const rows = await db.query('SELECT * FROM DocumentBundle WHERE shipmentId = ? ORDER BY createdAt DESC', [req.params.id]);
+        return res.json({ data: rows });
+    }
+    catch (error) {
+        return res.status(500).json({ error: String(error) });
+    }
+});
+router.post('/shipment/:id/merge', async (req, res) => {
+    try {
+        const { id: shipmentId } = req.params;
+        const documentIds = Array.isArray(req.body.documentIds) ? req.body.documentIds : [];
+        if (!documentIds.length)
+            return res.status(400).json({ error: 'documentIds in the required merge order are required' });
+        const placeholders = documentIds.map(() => '?').join(',');
+        const rows = await db.query(`
+          SELECT id, fileUrl, fileType FROM ShipmentDocument
+          WHERE shipmentId = ? AND id IN (${placeholders})
+        `, [shipmentId, ...documentIds]);
+        const byId = new Map(rows.map((row) => [row.id, row]));
+        const merged = await PDFDocument.create();
+        for (const documentId of documentIds) {
+            const document = byId.get(documentId);
+            if (!document?.fileUrl || !document.fileUrl.toLowerCase().endsWith('.pdf'))
+                return res.status(400).json({ error: `Document ${documentId} is missing or is not a PDF` });
+            const filePath = path.resolve(process.cwd(), document.fileUrl.replace(/^\/+/, ''));
+            const uploadsRoot = path.resolve(process.cwd(), 'uploads');
+            if (!filePath.startsWith(`${uploadsRoot}${path.sep}`) || !fs.existsSync(filePath))
+                return res.status(400).json({ error: `Document file ${documentId} is unavailable` });
+            const source = await PDFDocument.load(fs.readFileSync(filePath));
+            const pages = await merged.copyPages(source, source.getPageIndices());
+            pages.forEach((page) => merged.addPage(page));
+        }
+        const bundleId = createId();
+        const filename = `bundle-${shipmentId}-${Date.now()}.pdf`;
+        const uploadDir = path.resolve(process.cwd(), 'uploads');
+        fs.mkdirSync(uploadDir, { recursive: true });
+        fs.writeFileSync(path.join(uploadDir, filename), await merged.save());
+        const fileUrl = `/uploads/${filename}`;
+        await db.execute(`
+          INSERT INTO DocumentBundle (id, shipmentId, name, fileUrl, documentIds, createdBy, createdAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [
+            bundleId, shipmentId, req.body.name || 'Merged shipment documents',
+            fileUrl, JSON.stringify(documentIds), req.body.createdBy || null, new Date()
+        ]);
+        return res.status(201).json({ data: { id: bundleId, shipmentId, fileUrl, documentIds } });
+    }
+    catch (error) {
+        console.error('Document merge error:', error);
+        return res.status(500).json({ error: 'Failed to merge documents' });
+    }
 });
 // ============================================
 // CHECKLIST DEFINITIONS (Settings)
@@ -173,6 +257,26 @@ router.patch('/:id/status', async (req, res) => {
         }
         params.push(id);
         await db.execute(`UPDATE ShipmentDocument SET ${updates.join(', ')} WHERE id = ?`, params);
+        const [document] = await db.query(`
+          SELECT sd.shipmentId, dc.name, s.shipmentNumber
+          FROM ShipmentDocument sd
+          JOIN DocumentChecklist dc ON sd.checklistId = dc.id
+          JOIN Shipment s ON sd.shipmentId = s.id
+          WHERE sd.id = ?
+        `, [id]);
+        if (document) {
+            const rejected = status === 'rejected' || status === 'query';
+            await createNotification({
+                title: rejected ? 'Document query raised' : 'Document approved',
+                message: `${document.name} for ${document.shipmentNumber} was marked ${status}.`,
+                category: 'document',
+                type: rejected ? 'warning' : 'success',
+                priority: rejected ? 'high' : 'normal',
+                actionUrl: `/shipments/${document.shipmentId}/documents`,
+                emailEnabled: rejected,
+                recipients: await notificationRecipients(document.shipmentId),
+            });
+        }
         return res.json({ success: true });
     }
     catch (err) {
@@ -195,11 +299,19 @@ router.get('/stats', async (req, res) => {
         SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END) as expired
       FROM ShipmentDocument
     `);
+        const [pendingRequired] = await db.query(`
+          SELECT COUNT(*) as count
+          FROM Shipment s
+          CROSS JOIN DocumentChecklist dc
+          LEFT JOIN ShipmentDocument sd ON sd.shipmentId = s.id AND sd.checklistId = dc.id
+          WHERE s.isActive = 1 AND dc.isActive = 1 AND dc.isRequired = 1
+            AND (sd.id IS NULL OR sd.status IN ('pending', 'rejected', 'expired'))
+        `);
         // Fallback if no records yet
         const result = {
             total: stats?.total || 0,
             uploaded: stats?.uploaded || 0,
-            pending: stats?.pending || 0,
+            pending: pendingRequired?.count || stats?.pending || 0,
             verified: stats?.verified || 0,
             rejected: stats?.rejected || 0,
             expired: stats?.expired || 0

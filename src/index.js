@@ -1,6 +1,17 @@
 import app from './app.js';
-import { ensureShipmentTrackingColumns, maerskScraperMode, startShipmentTrackingScheduler } from './services/tracking.js';
+import { ensureFeatureSchema } from './services/schema.js';
+import { startNotificationScheduler } from './services/notifications.js';
 const PORT = process.env.PORT || 5001;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+
+async function start() {
+    await ensureFeatureSchema();
+    app.listen(PORT, () => {
+        console.log(`NEXPORT ERP server running on port ${PORT}`);
+        startNotificationScheduler();
+    });
+}
+
+start().catch((error) => {
+    console.error('Failed to start server:', error);
+    process.exit(1);
 });

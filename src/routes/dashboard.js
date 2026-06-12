@@ -8,7 +8,10 @@ router.get('/', async (req, res) => {
         const shipmentsByPriority = await db.query('SELECT priority, COUNT(*) as count FROM Shipment WHERE isActive = 1 GROUP BY priority');
         const [{ activeShipments }] = await db.query("SELECT COUNT(*) as activeShipments FROM Shipment WHERE isActive = 1 AND status NOT IN ('draft', 'closed')");
         const [{ inTransitShipments }] = await db.query("SELECT COUNT(*) as inTransitShipments FROM Shipment WHERE isActive = 1 AND status IN ('in_transit', 'vessel_departed')");
+        const [{ atPolShipments }] = await db.query("SELECT COUNT(*) as atPolShipments FROM Shipment WHERE isActive = 1 AND status = 'at_pol'");
+        const [{ atPodShipments }] = await db.query("SELECT COUNT(*) as atPodShipments FROM Shipment WHERE isActive = 1 AND status = 'at_pod'");
         const [{ customsClearanceShipments }] = await db.query("SELECT COUNT(*) as customsClearanceShipments FROM Shipment WHERE isActive = 1 AND status = 'customs_clearance'");
+        const [{ deliveredShipments }] = await db.query("SELECT COUNT(*) as deliveredShipments FROM Shipment WHERE isActive = 1 AND status IN ('delivered', 'closed')");
         const deliveredThisMonth = await db.query("SELECT COUNT(*) as count FROM Shipment WHERE isActive = 1 AND status IN ('delivered', 'closed') AND actualArrival >= ?", [new Date(new Date().getFullYear(), new Date().getMonth(), 1)]);
         const [{ totalShipmentValue }] = await db.query('SELECT SUM(shipmentValue) as sum FROM Shipment WHERE isActive = 1');
         const [totalExpenses] = await db.query('SELECT SUM(amount) as amount, SUM(amountBase) as amountBase FROM Expense WHERE isActive = 1');
@@ -83,19 +86,44 @@ router.get('/', async (req, res) => {
         }
         const shipmentsByShippingLine = await db.query('SELECT shippingLine, COUNT(*) as count FROM Shipment WHERE isActive = 1 AND shippingLine IS NOT NULL GROUP BY shippingLine ORDER BY count DESC');
         const shipmentsByOrigin = await db.query('SELECT originCountry as country, COUNT(*) as count, SUM(shipmentValue) as value FROM Shipment WHERE isActive = 1 AND originCountry IS NOT NULL GROUP BY originCountry ORDER BY count DESC');
+        const shipmentsByPort = await db.query(`
+          SELECT destinationPort as port, COUNT(*) as count, SUM(shipmentValue) as value
+          FROM Shipment WHERE isActive = 1 AND destinationPort IS NOT NULL
+          GROUP BY destinationPort ORDER BY count DESC
+        `);
+        const shipmentsBySupplier = await db.query(`
+          SELECT COALESCE(e.name, s.exporterCompany, 'Unassigned') as supplier,
+                 COUNT(*) as count, SUM(s.shipmentValue) as value
+          FROM Shipment s LEFT JOIN ExporterCompany e ON s.exporterCompanyId = e.id
+          WHERE s.isActive = 1
+          GROUP BY COALESCE(e.name, s.exporterCompany, 'Unassigned')
+          ORDER BY count DESC
+        `);
+        const yearlyTrend = await db.query(`
+          SELECT EXTRACT(YEAR FROM createdAt)::int as year, COUNT(*) as shipments,
+                 COALESCE(SUM(shipmentValue), 0) as value
+          FROM Shipment WHERE isActive = 1
+          GROUP BY EXTRACT(YEAR FROM createdAt) ORDER BY year
+        `);
         return res.json({
             shipments: {
                 total: totalShipments || 0,
                 active: activeShipments || 0,
+                atPol: atPolShipments || 0,
                 inTransit: inTransitShipments || 0,
+                atPod: atPodShipments || 0,
                 customsClearance: customsClearanceShipments || 0,
+                delivered: deliveredShipments || 0,
                 deliveredThisMonth: deliveredThisMonth[0]?.count || 0,
                 byStatus: shipmentsByStatus || [],
                 byPriority: shipmentsByPriority || [],
                 totalValue: totalShipmentValue?.sum || 0,
                 monthlyTrend,
+                yearlyTrend,
                 byShippingLine: shipmentsByShippingLine || [],
                 byOriginCountry: shipmentsByOrigin || [],
+                byPort: shipmentsByPort || [],
+                bySupplier: shipmentsBySupplier || [],
             },
             financials: {
                 totalExpenses: totalExpenses?.amount || 0,

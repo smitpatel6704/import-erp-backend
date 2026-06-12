@@ -17,6 +17,7 @@ model User {
   role          String         @default("user")
   department    String?
   phone         String?
+  permissions   Json           @default("[]")
   isActive      Boolean        @default(true)
   lastLoginAt   DateTime?
   createdAt     DateTime       @default(now())
@@ -41,6 +42,10 @@ model Company {
   billingAddress  String?
   shippingAddress String?
   creditLimit     Float         @default(0)
+  companyType     String        @default("importer")
+  taxNumber       String?
+  bankDetails     String?
+  customFields    Json          @default("[]")
   isActive        Boolean       @default(true)
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -93,6 +98,8 @@ model Shipment {
   companyId         String?
   tags              String?
   internalNotes     String?
+  goodsDescription  String?
+  notes             String?
   isActive          Boolean           @default(true)
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
@@ -108,6 +115,7 @@ model Shipment {
   shipmentItems     ShipmentItem[]
   timelineEvents    TimelineEvent[]
   shipmentDocuments ShipmentDocument[]
+  documentBundles   DocumentBundle[]
 
   @@index([companyId])
 }
@@ -124,11 +132,13 @@ model ShipmentItem {
   netWeight   Float    @default(0)
   cbmVolume   Float    @default(0)
   packingType String?
+  containerId String?
   product     Product? @relation(fields: [productId], references: [id])
   shipment    Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
 
   @@index([productId])
   @@index([shipmentId])
+  @@index([containerId])
 }
 
 model TimelineEvent {
@@ -154,6 +164,7 @@ model Container {
   currentWeight   Float     @default(0)
   status          String    @default("at_pol")
   currentLocation String?
+  goodsDescription String?
   latitude        Float?
   longitude       Float?
   shipmentId      String
@@ -326,7 +337,15 @@ model Notification {
   category  String   @default("system")
   isRead    Boolean  @default(false)
   actionUrl String?
+  priority String @default("normal")
+  emailEnabled Boolean @default(false)
+  emailStatus String @default("not_requested")
+  emailSentAt DateTime?
+  emailRecipients String?
+  emailError String?
+  dedupeKey String? @unique
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
   user      User?    @relation(fields: [userId], references: [id])
 
   @@index([userId])
@@ -401,4 +420,17 @@ model ShipmentDocument {
 
   shipment         Shipment          @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
   checklist        DocumentChecklist @relation(fields: [checklistId], references: [id])
+}
+
+model DocumentBundle {
+  id          String   @id @default(cuid())
+  shipmentId  String
+  name        String
+  fileUrl     String
+  documentIds Json     @default("[]")
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  shipment    Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([shipmentId])
 }

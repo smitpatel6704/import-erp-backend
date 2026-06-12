@@ -42,13 +42,18 @@ router.put('/:id', async (req, res) => {
         const fields = [
             'name', 'contactPerson', 'mobile', 'email', 'officeAddress',
             'gstNumber', 'iecCode', 'panNumber', 'bankName', 'bankAccount',
-            'bankIfsc', 'billingAddress', 'shippingAddress', 'creditLimit', 'isActive'
+            'bankIfsc', 'billingAddress', 'shippingAddress', 'creditLimit', 'companyType',
+            'taxNumber', 'bankDetails', 'isActive'
         ];
         for (const field of fields) {
             if (body[field] !== undefined) {
                 updates.push(`${field} = ?`);
                 values.push(field === 'isActive' ? (body[field] ? 1 : 0) : body[field]);
             }
+        }
+        if (body.customFields !== undefined) {
+            updates.push('customFields = ?');
+            values.push(JSON.stringify(body.customFields || []));
         }
         if (updates.length > 0) {
             updates.push('updatedAt = ?');
@@ -84,6 +89,7 @@ router.get('/', async (req, res) => {
         const limit = parseInt(req.query.limit || '20');
         const search = req.query.search || '';
         const isActive = req.query.isActive;
+        const companyType = req.query.companyType || req.query.type || '';
         const sortBy = req.query.sortBy || 'createdAt';
         const sortOrder = req.query.sortOrder || 'desc';
         const skip = (page - 1) * limit;
@@ -97,6 +103,10 @@ router.get('/', async (req, res) => {
         if (isActive !== undefined && isActive !== '') {
             whereClause += ' AND isActive = ?';
             params.push(isActive === 'true' ? 1 : 0);
+        }
+        if (companyType) {
+            whereClause += ' AND companyType = ?';
+            params.push(companyType);
         }
         const countRows = await db.query(`SELECT COUNT(*) as c FROM Company WHERE ${whereClause}`, params);
         const total = countRows[0].c;
@@ -130,12 +140,15 @@ router.post('/', async (req, res) => {
       INSERT INTO Company (
         id, name, contactPerson, mobile, email, officeAddress, gstNumber, 
         iecCode, panNumber, bankName, bankAccount, bankIfsc, billingAddress, 
-        shippingAddress, creditLimit, isActive, createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        shippingAddress, creditLimit, companyType, taxNumber, bankDetails, customFields,
+        isActive, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
             id, body.name || null, body.contactPerson || null, body.mobile || null, body.email || null, body.officeAddress || null,
             body.gstNumber || null, body.iecCode || null, body.panNumber || null, body.bankName || null, body.bankAccount || null,
             body.bankIfsc || null, body.billingAddress || null, body.shippingAddress || null, body.creditLimit || 0,
+            body.companyType || body.type || 'importer', body.taxNumber || null,
+            body.bankDetails || null, JSON.stringify(body.customFields || body.otherDetails || []),
             body.isActive !== undefined ? (body.isActive ? 1 : 0) : 1, new Date(), new Date()
         ]);
         const companies = await db.query('SELECT * FROM Company WHERE id = ?', [id]);

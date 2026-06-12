@@ -1,6 +1,7 @@
 import { db } from '../db.js';
 import { Router } from 'express';
 import { createId } from '@paralleldrive/cuid2';
+import { createNotification, notificationRecipients } from '../services/notifications.js';
 const router = Router();
 // GET /api/shipments/[id]
 router.get('/:id', async (req, res) => {
@@ -49,7 +50,7 @@ router.put('/:id', async (req, res) => {
             'bookingNumber', 'blNumber', 'shippingLine', 'freightForwarder', 'vesselName',
             'voyageNumber', 'originCountry', 'originPort', 'destinationPort', 'warehouseLocation',
             'deliveryAddress', 'priority', 'status', 'shipmentValue', 'currency', 'companyId',
-            'tags', 'internalNotes', 'isActive'
+            'tags', 'internalNotes', 'goodsDescription', 'notes', 'exporterCompanyId', 'isActive'
         ];
         for (const field of settableFields) {
             if (body[field] !== undefined) {
@@ -99,6 +100,17 @@ router.put('/:id', async (req, res) => {
             };
             const tlId = createId();
             await db.execute(`INSERT INTO TimelineEvent (id, shipmentId, event, description, location, timestamp) VALUES (?, ?, ?, ?, ?, ?)`, [tlId, id, statusLabels[body.status] || `Status Updated: ${body.status}`, `Shipment status changed from ${oldShipment.status} to ${body.status}`, body.destinationPort || null, new Date()]);
+            const isHighPriority = ['at_pod', 'customs_clearance', 'delivered'].includes(body.status);
+            await createNotification({
+                title: statusLabels[body.status] || 'Shipment updated',
+                message: `${shipment.shipmentNumber} changed from ${oldShipment.status} to ${body.status}.`,
+                category: 'shipment',
+                type: isHighPriority ? 'warning' : 'info',
+                priority: isHighPriority ? 'high' : shipment.priority,
+                actionUrl: `/shipments/${id}`,
+                emailEnabled: isHighPriority,
+                recipients: await notificationRecipients(id),
+            });
         }
         return res.json({ data: shipment });
     }
@@ -216,14 +228,52 @@ router.post('/', async (req, res) => {
         const body = req.body;
         const lastShipments = await db.query('SELECT shipmentNumber FROM Shipment ORDER BY createdAt DESC LIMIT 1');
         const nextNum = lastShipments.length > 0 ? parseInt(lastShipments[0].shipmentNumber.split('-').pop() || '0') + 1 : 1;
-        const shipmentNumber = `SHP-2025-${String(nextNum).padStart(4, '0')}`;
+        const shipmentNumber = `SHP-${new Date().getFullYear()}-${String(nextNum).padStart(4, '0')}`;
         const id = createId();
         await db.execute(`
-      INSERT INTO Shipment (id, shipmentNumber, bookingNumber, blNumber, shippingLine, freightForwarder, vesselName, voyageNumber, etd, eta, actualArrival, originCountry, originPort, destinationPort, warehouseLocation, deliveryAddress, priority, status, shipmentValue, currency, companyId, exporterCompanyId, tags, internalNotes, isActive, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO Shipment (id, shipmentNumber, bookingNumber, blNumber, shippingLine, freightForwarder, vesselName, voyageNumber, etd, eta, actualArrival, originCountry, originPort, destinationPort, warehouseLocation, deliveryAddress, priority, status, shipmentValue, currency, companyId, exporterCompanyId, tags, internalNotes, goodsDescription, notes, isActive, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-            id, shipmentNumber, body.bookingNumber || null, body.blNumber || null, body.shippingLine || null, body.freightForwarder || null, body.vesselName || null, body.voyageNumber || null, body.etd ? new Date(body.etd) : null, body.eta ? new Date(body.eta) : null, body.actualArrival ? new Date(body.actualArrival) : null, body.originCountry || null, body.originPort || null, body.destinationPort || null, body.warehouseLocation || null, body.deliveryAddress || null, body.priority || 'normal', body.status || 'draft', body.shipmentValue || 0, body.currency || 'USD', body.companyId || null, body.exporterCompanyId || null, body.tags || null, body.internalNotes || null, body.isActive !== undefined ? (body.isActive ? 1 : 0) : 1, new Date(), new Date()
+            id, shipmentNumber, body.bookingNumber || null, body.blNumber || null, body.shippingLine || null, body.freightForwarder || null, body.vesselName || null, body.voyageNumber || null, body.etd ? new Date(body.etd) : null, body.eta ? new Date(body.eta) : null, body.actualArrival ? new Date(body.actualArrival) : null, body.originCountry || null, body.originPort || null, body.destinationPort || null, body.warehouseLocation || null, body.deliveryAddress || null, body.priority || 'normal', body.status || 'draft', body.shipmentValue || 0, body.currency || 'USD', body.companyId || null, body.exporterCompanyId || null, body.tags || null, body.internalNotes || null, body.goodsDescription || null, body.notes || null, body.isActive !== undefined ? (body.isActive ? 1 : 0) : 1, new Date(), new Date()
         ]);
+        for (const container of body.containers || []) {
+            await db.execute(`
+              INSERT INTO Container (
+                id, containerNumber, containerType, containerSize, sealNumber, stuffingType,
+                weightCapacity, currentWeight, status, currentLocation, goodsDescription,
+                shipmentId, isActive, createdAt, updatedAt
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [
+                createId(), container.containerNumber, container.containerType || 'standard',
+                container.containerSize || '20ft', container.sealNumber || null,
+                container.stuffingType || null, container.weightCapacity || 0,
+                container.currentWeight || 0, container.status || 'at_pol',
+                container.currentLocation || null, container.goodsDescription || null,
+                id, 1, new Date(), new Date()
+            ]);
+        }
+        for (const item of body.shipmentItems || body.items || []) {
+            await db.execute(`
+              INSERT INTO ShipmentItem (
+                id, shipmentId, productId, containerId, description, quantity, unitPrice,
+                currency, grossWeight, netWeight, cbmVolume, packingType
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [
+                createId(), id, item.productId || null, item.containerId || null,
+                item.description || null, item.quantity || 0, item.unitPrice || 0,
+                item.currency || body.currency || 'USD', item.grossWeight || 0,
+                item.netWeight || 0, item.cbmVolume || 0, item.packingType || null
+            ]);
+        }
+        if (Array.isArray(body.requiredDocumentIds)) {
+            for (const checklistId of body.requiredDocumentIds) {
+                await db.execute(`
+                  INSERT INTO ShipmentDocument (
+                    id, shipmentId, checklistId, status, createdAt, updatedAt
+                  ) VALUES (?, ?, ?, 'pending', ?, ?)
+                `, [createId(), id, checklistId, new Date(), new Date()]);
+            }
+        }
         const shipments = await db.query('SELECT * FROM Shipment WHERE id = ?', [id]);
         const shipment = shipments[0];
         if (shipment.companyId) {

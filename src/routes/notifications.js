@@ -1,12 +1,52 @@
 import { db } from '../db.js';
 import { Router } from 'express';
 import { createId } from '@paralleldrive/cuid2';
+import { createNotification, runNotificationReminders, sendNotificationEmail } from '../services/notifications.js';
+import { isEmailConfigured } from '../services/email.js';
 const router = Router();
+router.get('/email/status', (_req, res) => {
+    return res.json({ data: { configured: isEmailConfigured(), provider: 'gmail-smtp' } });
+});
+const runReminders = async (req, res) => {
+    try {
+        if (process.env.CRON_SECRET && req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`)
+            return res.status(401).json({ error: 'Unauthorized' });
+        return res.json({ data: await runNotificationReminders() });
+    }
+    catch (error) {
+        console.error('Notification reminder error:', error);
+        return res.status(500).json({ error: 'Failed to run notification reminders' });
+    }
+};
+router.get('/run-reminders', runReminders);
+router.post('/run-reminders', runReminders);
+router.post('/:id/send-email', async (req, res) => {
+    try {
+        const [notification] = await db.query('SELECT * FROM Notification WHERE id = ?', [req.params.id]);
+        if (!notification)
+            return res.status(404).json({ error: 'Notification not found' });
+        const recipients = req.body.recipients || notification.emailRecipients;
+        const sentTo = await sendNotificationEmail(notification, recipients);
+        await db.execute(`
+          UPDATE Notification
+          SET emailEnabled = 1, emailStatus = 'sent', emailSentAt = ?, emailRecipients = ?,
+              emailError = NULL, updatedAt = ?
+          WHERE id = ?
+        `, [new Date(), sentTo.join(','), new Date(), notification.id]);
+        return res.json({ data: { sent: true, recipients: sentTo } });
+    }
+    catch (error) {
+        await db.execute(`
+          UPDATE Notification SET emailStatus = 'failed', emailError = ?, updatedAt = ? WHERE id = ?
+        `, [String(error.message || error), new Date(), req.params.id]).catch(() => {});
+        return res.status(500).json({ error: String(error.message || error) });
+    }
+});
 // GET /api/notifications/[id]
 router.get('/:id', async (req, res) => {
     const { id } = req.params;
     try {
-        const notification = await db.query(`
+        const notificationRows = await db.query(`
       SELECT n.*, 
              u.id as userId, u.name as userName, u.avatar as userAvatar
       FROM Notification n
@@ -16,7 +56,7 @@ router.get('/:id', async (req, res) => {
         if (!notification || notification.length === 0) {
             return res.status(404).json({ error: 'Notification not found' });
         }
-        const row = notification[0];
+        const row = notificationRows[0];
         const formattedNotification = {
             ...row,
             isRead: Boolean(row.isRead),
@@ -152,32 +192,22 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
     try {
         const body = req.body;
-        const id = createId();
-        await db.execute(`
-      INSERT INTO Notification (
-        id, userId, title, message, type, category, 
-        isRead, actionUrl, createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-            id,
-            body.userId || null,
-            body.title,
-            body.message,
-            body.type || 'info',
-            body.category || 'system',
-            body.isRead ? 1 : 0,
-            body.actionUrl || null,
-            new Date(),
-            new Date()
-        ]);
-        const notification = await db.query(`
+        if (!body.title || !body.message)
+            return res.status(400).json({ error: 'title and message are required' });
+        const { notification } = await createNotification({
+            ...body,
+            emailEnabled: body.emailEnabled || body.sendEmail,
+            recipients: body.recipients,
+        });
+        const id = notification.id;
+        const notificationRows = await db.query(`
       SELECT n.*, 
              u.id as rel_userId, u.name as userName, u.avatar as userAvatar
       FROM Notification n
       LEFT JOIN User u ON n.userId = u.id
       WHERE n.id = ?
     `, [id]);
-        const row = notification[0];
+        const row = notificationRows[0];
         const formattedNotification = {
             ...row,
             isRead: Boolean(row.isRead),
