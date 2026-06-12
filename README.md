@@ -15,6 +15,10 @@ Use a Google App Password, not the Gmail account password. On startup the API
 adds missing feature columns/tables and runs ETA and pending-document reminder
 checks every hour.
 
+For Gmail, enable 2-Step Verification on the Google account, create an App
+Password, and put that 16-character value in `SMTP_PASS`. The notification
+screen can verify the SMTP connection and send or retry individual emails.
+
 ## Added APIs
 
 - `GET /api/dashboard` - stage totals, monthly/yearly value trends, supplier/port/country data
@@ -25,5 +29,6 @@ checks every hour.
 - `POST /api/notifications/run-reminders` - run ETA/document reminder scan
 - `POST /api/notifications/:id/send-email` - send or retry a notification email
 - `GET /api/notifications/email/status` - SMTP configuration status
+- `POST /api/notifications/email/test` - verify the Gmail SMTP connection
 - `GET /api/reports/export.xlsx` and `GET /api/reports/export.pdf`
 - `GET|POST|PUT|DELETE /api/settings/users` - user and role administration

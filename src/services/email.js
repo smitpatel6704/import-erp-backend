@@ -13,17 +13,42 @@ const smtpConfig = () => {
   };
 };
 
-export const isEmailConfigured = () => Boolean(smtpConfig());
+let transporter;
 
-export async function sendEmail({ to, subject, text, html }) {
+const getTransporter = () => {
   const config = smtpConfig();
   if (!config) throw new Error('SMTP is not configured');
+  if (!transporter) transporter = nodemailer.createTransport(config);
+  return { config, transporter };
+};
+
+export const isEmailConfigured = () => Boolean(smtpConfig());
+
+export const getEmailConfiguration = () => {
+  const config = smtpConfig();
+  return {
+    configured: Boolean(config),
+    provider: 'gmail-smtp',
+    host: config?.host || 'smtp.gmail.com',
+    port: config?.port || 465,
+    secure: config?.secure ?? true,
+    from: process.env.SMTP_FROM || (config ? `NEXPORT ERP <${config.auth.user}>` : null),
+  };
+};
+
+export async function verifyEmailConnection() {
+  const { transporter: smtpTransporter } = getTransporter();
+  await smtpTransporter.verify();
+  return getEmailConfiguration();
+}
+
+export async function sendEmail({ to, subject, text, html }) {
+  const { config, transporter: smtpTransporter } = getTransporter();
 
   const recipients = Array.isArray(to) ? to.filter(Boolean) : [to].filter(Boolean);
   if (!recipients.length) throw new Error('At least one email recipient is required');
 
-  const transporter = nodemailer.createTransport(config);
-  return transporter.sendMail({
+  return smtpTransporter.sendMail({
     from: process.env.SMTP_FROM || `NEXPORT ERP <${config.auth.user}>`,
     to: recipients.join(', '),
     subject,

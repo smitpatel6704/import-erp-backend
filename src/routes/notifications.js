@@ -1,11 +1,21 @@
 import { db } from '../db.js';
 import { Router } from 'express';
-import { createId } from '@paralleldrive/cuid2';
 import { createNotification, runNotificationReminders, sendNotificationEmail } from '../services/notifications.js';
-import { isEmailConfigured } from '../services/email.js';
+import { getEmailConfiguration, verifyEmailConnection } from '../services/email.js';
 const router = Router();
 router.get('/email/status', (_req, res) => {
-    return res.json({ data: { configured: isEmailConfigured(), provider: 'gmail-smtp' } });
+    return res.json({ data: getEmailConfiguration() });
+});
+router.post('/email/test', async (_req, res) => {
+    try {
+        return res.json({ data: { ...(await verifyEmailConnection()), connected: true } });
+    }
+    catch (error) {
+        return res.status(500).json({
+            error: String(error.message || error),
+            data: { ...getEmailConfiguration(), connected: false },
+        });
+    }
 });
 const runReminders = async (req, res) => {
     try {
@@ -26,6 +36,11 @@ router.post('/:id/send-email', async (req, res) => {
         if (!notification)
             return res.status(404).json({ error: 'Notification not found' });
         const recipients = req.body.recipients || notification.emailRecipients;
+        await db.execute(`
+          UPDATE Notification
+          SET emailEnabled = 1, emailStatus = 'sending', emailError = NULL, updatedAt = ?
+          WHERE id = ?
+        `, [new Date(), notification.id]);
         const sentTo = await sendNotificationEmail(notification, recipients);
         await db.execute(`
           UPDATE Notification
@@ -33,7 +48,8 @@ router.post('/:id/send-email', async (req, res) => {
               emailError = NULL, updatedAt = ?
           WHERE id = ?
         `, [new Date(), sentTo.join(','), new Date(), notification.id]);
-        return res.json({ data: { sent: true, recipients: sentTo } });
+        const [updated] = await db.query('SELECT * FROM Notification WHERE id = ?', [notification.id]);
+        return res.json({ data: updated });
     }
     catch (error) {
         await db.execute(`
@@ -53,7 +69,7 @@ router.get('/:id', async (req, res) => {
       LEFT JOIN User u ON n.userId = u.id
       WHERE n.id = ?
     `, [id]);
-        if (!notification || notification.length === 0) {
+        if (notificationRows.length === 0) {
             return res.status(404).json({ error: 'Notification not found' });
         }
         const row = notificationRows[0];

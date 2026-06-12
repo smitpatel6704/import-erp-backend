@@ -34,7 +34,9 @@ export async function notificationRecipients(shipmentId) {
 }
 
 export async function sendNotificationEmail(notification, recipients) {
-  const to = normalizeRecipients(recipients || notification.emailRecipients);
+  const to = normalizeRecipients(
+    recipients || notification.emailRecipients || process.env.NOTIFICATION_EMAIL_TO
+  );
   if (!to.length) throw new Error('No notification email recipients are available');
 
   await sendEmail({
@@ -103,7 +105,11 @@ export async function runNotificationReminders() {
   const dayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const twoDaysStart = new Date(dayStart);
   twoDaysStart.setDate(twoDaysStart.getDate() + 2);
-  const dateKey = dayStart.toISOString().slice(0, 10);
+  const dateKey = [
+    dayStart.getFullYear(),
+    String(dayStart.getMonth() + 1).padStart(2, '0'),
+    String(dayStart.getDate()).padStart(2, '0'),
+  ].join('-');
   let created = 0;
 
   const arrivals = await db.query(`
