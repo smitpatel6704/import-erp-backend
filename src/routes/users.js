@@ -1,12 +1,26 @@
 import { Router } from 'express';
 import { createId } from '@paralleldrive/cuid2';
-import { randomBytes, scryptSync } from 'crypto';
-import { db } from '../db.js';
+import { db, pool } from '../db.js';
+import { createInvitationToken, hashPassword, normalizePermissions } from '../services/auth.js';
+import { isEmailConfigured, sendEmail } from '../services/email.js';
 
 const router = Router();
-const hashPassword = (password) => {
-  const salt = randomBytes(16).toString('hex');
-  return `scrypt:${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
+const appUrl = () => (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+
+const sendInvitation = async (user, token) => {
+  const inviteUrl = `${appUrl()}/setup-password?token=${encodeURIComponent(token)}`;
+  if (!isEmailConfigured()) return { inviteUrl, emailSent: false, emailError: 'SMTP is not configured' };
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: 'Create your Nexport ERP password',
+      text: `Hello ${user.name}, create your Nexport ERP password using this link: ${inviteUrl}`,
+      html: `<p>Hello ${user.name},</p><p>Your Nexport ERP account has been created.</p><p><a href="${inviteUrl}">Create your password</a></p><p>This link expires in 24 hours.</p>`,
+    });
+    return { inviteUrl, emailSent: true };
+  } catch (error) {
+    return { inviteUrl, emailSent: false, emailError: error.message };
+  }
 };
 
 router.get('/stats', async (_req, res) => {
@@ -25,7 +39,7 @@ router.get('/', async (req, res) => {
     const search = `%${req.query.search || ''}%`;
     const users = await db.query(`
       SELECT id, email, name, avatar, role, department, phone, permissions,
-             isActive, lastLoginAt, createdAt, updatedAt
+             isActive, passwordSetAt, lastLoginAt, createdAt, updatedAt
       FROM User WHERE name LIKE ? OR email LIKE ? ORDER BY createdAt DESC
     `, [search, search]);
     return res.json({ data: users });
@@ -37,24 +51,54 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const body = req.body;
-    if (!body.name || !body.email || !body.password)
-      return res.status(400).json({ error: 'name, email and password are required' });
+    if (!body.name || !body.email)
+      return res.status(400).json({ error: 'Name and email are required' });
+    const email = body.email.trim().toLowerCase();
+    const [existing] = await db.query('SELECT id FROM User WHERE email = ?', [email]);
+    if (existing) return res.status(409).json({ error: 'A user with this email already exists' });
     const id = createId();
+    const invitation = createInvitationToken();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await db.execute(`
       INSERT INTO User (
         id, email, name, password, avatar, role, department, phone, permissions,
-        isActive, createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        isActive, passwordSetupTokenHash, passwordSetupExpiresAt, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?)
     `, [
-      id, body.email.toLowerCase(), body.name, hashPassword(body.password), body.avatar || null,
+      id, email, body.name, hashPassword(createInvitationToken().token), body.avatar || null,
       body.role || 'user', body.department || null, body.phone || null,
-      JSON.stringify(body.permissions || []), body.isActive === false ? 0 : 1, new Date(), new Date(),
+      JSON.stringify(normalizePermissions(body.permissions)), body.isActive === false ? 0 : 1,
+      invitation.hash, expiresAt, new Date(), new Date(),
     ]);
     const [user] = await db.query(`
       SELECT id, email, name, avatar, role, department, phone, permissions, isActive, createdAt
       FROM User WHERE id = ?
     `, [id]);
-    return res.status(201).json({ data: user });
+    await pool.query(`
+      INSERT INTO "UserInvitation" ("tokenHash", "userId", "expiresAt")
+      VALUES ($1, $2, $3)
+    `, [invitation.hash, id, expiresAt]);
+    const delivery = await sendInvitation(user, invitation.token);
+    return res.status(201).json({ data: { user, ...delivery } });
+  } catch (error) {
+    return res.status(500).json({ error: String(error) });
+  }
+});
+
+router.post('/:id/resend-invitation', async (req, res) => {
+  try {
+    const [user] = await db.query('SELECT id, email, name, isActive FROM User WHERE id = ?', [req.params.id]);
+    if (!user || !user.isActive) return res.status(404).json({ error: 'User not found' });
+    const invitation = createInvitationToken();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await db.execute(`
+      UPDATE User SET passwordSetupTokenHash = ?, passwordSetupExpiresAt = ?, updatedAt = ? WHERE id = ?
+    `, [invitation.hash, expiresAt, new Date(), user.id]);
+    await pool.query(`
+      INSERT INTO "UserInvitation" ("tokenHash", "userId", "expiresAt")
+      VALUES ($1, $2, $3)
+    `, [invitation.hash, user.id, expiresAt]);
+    return res.json({ data: await sendInvitation(user, invitation.token) });
   } catch (error) {
     return res.status(500).json({ error: String(error) });
   }
@@ -74,10 +118,6 @@ router.put('/:id', async (req, res) => {
     if (req.body.permissions !== undefined) {
       updates.push('permissions = ?');
       values.push(JSON.stringify(req.body.permissions || []));
-    }
-    if (req.body.password) {
-      updates.push('password = ?');
-      values.push(hashPassword(req.body.password));
     }
     if (updates.length) {
       updates.push('updatedAt = ?');

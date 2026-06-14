@@ -85,6 +85,7 @@ router.get('/', async (req, res) => {
         const containerType = req.query.containerType || '';
         const containerSize = req.query.containerSize || '';
         const shipmentId = req.query.shipmentId || '';
+        const linkedShipment = req.query.linkedShipment === 'true';
         const isActive = req.query.isActive;
         const sortBy = req.query.sortBy || 'createdAt';
         const sortOrder = req.query.sortOrder || 'desc';
@@ -116,6 +117,9 @@ router.get('/', async (req, res) => {
             whereClause += ' AND c.shipmentId = ?';
             params.push(shipmentId);
             countParams.push(shipmentId);
+        }
+        if (linkedShipment) {
+            whereClause += ' AND c.shipmentId IS NOT NULL';
         }
         if (isActive !== undefined && isActive !== '') {
             whereClause += ' AND c.isActive = ?';

@@ -1,6 +1,11 @@
 import { pool } from '../db.js';
 
 const statements = [
+  `ALTER TABLE "ExporterCompany" ADD COLUMN IF NOT EXISTS "contactPerson" TEXT`,
+  `ALTER TABLE "ExporterCompany" ADD COLUMN IF NOT EXISTS "mobile" TEXT`,
+  `ALTER TABLE "ExporterCompany" ADD COLUMN IF NOT EXISTS "email" TEXT`,
+  `ALTER TABLE "ExporterCompany" ADD COLUMN IF NOT EXISTS "address" TEXT`,
+  `ALTER TABLE "ExporterCompany" ADD COLUMN IF NOT EXISTS "country" TEXT`,
   `ALTER TABLE "Company" ADD COLUMN IF NOT EXISTS "companyType" VARCHAR(30) NOT NULL DEFAULT 'importer'`,
   `ALTER TABLE "Company" ADD COLUMN IF NOT EXISTS "taxNumber" VARCHAR(255)`,
   `ALTER TABLE "Company" ADD COLUMN IF NOT EXISTS "bankDetails" TEXT`,
@@ -18,6 +23,24 @@ const statements = [
   `ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS "dedupeKey" VARCHAR(255)`,
   `ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()`,
   `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "permissions" JSONB NOT NULL DEFAULT '[]'::jsonb`,
+  `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "passwordSetupTokenHash" TEXT`,
+  `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "passwordSetupExpiresAt" TIMESTAMP`,
+  `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "passwordSetAt" TIMESTAMP`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "User_passwordSetupTokenHash_key" ON "User" ("passwordSetupTokenHash") WHERE "passwordSetupTokenHash" IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS "UserInvitation" (
+    "tokenHash" TEXT PRIMARY KEY,
+    "userId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+    "expiresAt" TIMESTAMP NOT NULL,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE INDEX IF NOT EXISTS "UserInvitation_userId_idx" ON "UserInvitation" ("userId")`,
+  `INSERT INTO "UserInvitation" ("tokenHash", "userId", "expiresAt")
+    SELECT "passwordSetupTokenHash", "id", "passwordSetupExpiresAt"
+    FROM "User"
+    WHERE "passwordSetupTokenHash" IS NOT NULL
+      AND "passwordSetupExpiresAt" IS NOT NULL
+    ON CONFLICT ("tokenHash") DO NOTHING`,
+  `DELETE FROM "UserInvitation" WHERE "expiresAt" < NOW()`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "Notification_dedupeKey_key" ON "Notification" ("dedupeKey") WHERE "dedupeKey" IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS "ShipmentItem_containerId_idx" ON "ShipmentItem" ("containerId")`,
   `CREATE TABLE IF NOT EXISTS "DocumentBundle" (
