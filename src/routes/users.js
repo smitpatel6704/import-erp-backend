@@ -136,8 +136,12 @@ router.put('/:id', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    await db.execute('UPDATE User SET isActive = 0, updatedAt = ? WHERE id = ?', [new Date(), req.params.id]);
-    return res.json({ data: { id: req.params.id, isActive: false } });
+    if (req.params.id === req.user.id)
+      return res.status(400).json({ error: 'You cannot delete your own signed-in account' });
+    const result = await db.execute('DELETE FROM User WHERE id = ?', [req.params.id]);
+    if (!result.rowCount)
+      return res.status(404).json({ error: 'User not found' });
+    return res.json({ data: { id: req.params.id, deleted: true } });
   } catch (error) {
     return res.status(500).json({ error: String(error) });
   }
