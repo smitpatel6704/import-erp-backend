@@ -117,7 +117,7 @@ router.put('/:id', async (req, res) => {
     }
     if (req.body.permissions !== undefined) {
       updates.push('permissions = ?');
-      values.push(JSON.stringify(req.body.permissions || []));
+      values.push(JSON.stringify(normalizePermissions(req.body.permissions)));
     }
     if (updates.length) {
       updates.push('updatedAt = ?');
