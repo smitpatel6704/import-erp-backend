@@ -16,20 +16,39 @@ const normalizeRecipients = (recipients) => [...new Set(
     .filter(Boolean)
 )];
 
-export async function notificationRecipients(shipmentId) {
+const normalizeUserIds = (value) => {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+  } catch {
+    return String(value).split(',').map((item) => item.trim()).filter(Boolean);
+  }
+};
+
+export async function notificationRecipients(shipmentId, options = {}) {
   const rows = await db.query(`
-    SELECT c.email AS importerEmail, e.email AS exporterEmail
+    SELECT c.email AS importerEmail, e.email AS exporterEmail, s.notificationUserIds
     FROM Shipment s
     LEFT JOIN Company c ON s.companyId = c.id
     LEFT JOIN ExporterCompany e ON s.exporterCompanyId = e.id
     WHERE s.id = ?
   `, [shipmentId]);
   const admins = await db.query(`SELECT email FROM User WHERE isActive = 1 AND role IN ('admin', 'super_admin')`);
+  const selectedUserIds = normalizeUserIds(rows[0]?.notificationUserIds);
+  const selectedUsers = selectedUserIds.length
+    ? await db.query(
+      `SELECT email FROM User WHERE isActive = 1 AND id IN (${selectedUserIds.map(() => '?').join(',')})`,
+      selectedUserIds,
+    )
+    : [];
   return normalizeRecipients([
-    rows[0]?.importerEmail,
-    rows[0]?.exporterEmail,
+    options.includeCompanyContacts === false ? null : rows[0]?.importerEmail,
+    options.includeCompanyContacts === false ? null : rows[0]?.exporterEmail,
     process.env.NOTIFICATION_EMAIL_TO,
     ...admins.map((admin) => admin.email),
+    ...selectedUsers.map((user) => user.email),
   ]);
 }
 
@@ -111,6 +130,34 @@ export async function runNotificationReminders() {
     String(dayStart.getDate()).padStart(2, '0'),
   ].join('-');
   let created = 0;
+  const upcomingArrivals = await db.query(`
+    SELECT id, shipmentNumber, eta, destinationPort, vesselName
+    FROM Shipment
+    WHERE isActive = 1
+      AND eta >= ?
+      AND eta < ?
+      AND status NOT IN ('at_pod', 'customs_clearance', 'duty_paid', 'in_transport', 'offloaded', 'delivered', 'closed')
+  `, [twoDaysStart, new Date(twoDaysStart.getTime() + 86400000)]);
+
+  for (const shipment of upcomingArrivals) {
+    const arrivalDate = new Date(shipment.eta).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    const result = await createNotification({
+      title: 'Shipment arrives in 2 days',
+      message: `${shipment.shipmentNumber} is expected to arrive at ${shipment.destinationPort || 'the destination port'} on ${arrivalDate}${shipment.vesselName ? ` aboard ${shipment.vesselName}` : ''}.`,
+      category: 'eta',
+      type: 'warning',
+      priority: 'high',
+      actionUrl: `/shipments/${shipment.id}`,
+      emailEnabled: true,
+      recipients: await notificationRecipients(shipment.id, { includeCompanyContacts: false }),
+      dedupeKey: `eta-upcoming:${shipment.id}:${dateKey}:2`,
+    });
+    if (!result.duplicate) created += 1;
+  }
 
   const arrivals = await db.query(`
     SELECT id, shipmentNumber, eta, destinationPort
@@ -161,7 +208,12 @@ export async function runNotificationReminders() {
     if (!result.duplicate) created += 1;
   }
 
-  return { created, arrivalsChecked: arrivals.length, pendingShipmentsChecked: pending.length };
+  return {
+    created,
+    upcomingArrivalsChecked: upcomingArrivals.length,
+    arrivalsChecked: arrivals.length,
+    pendingShipmentsChecked: pending.length,
+  };
 }
 
 let reminderTimer;
@@ -170,5 +222,5 @@ export function startNotificationScheduler() {
   void runNotificationReminders().catch((error) => console.error('Notification reminder scan failed:', error));
   reminderTimer = setInterval(() => {
     void runNotificationReminders().catch((error) => console.error('Notification reminder scan failed:', error));
-  }, Number(process.env.NOTIFICATION_SCAN_INTERVAL_MS || 60 * 60 * 1000));
+  }, Number(process.env.NOTIFICATION_SCAN_INTERVAL_MS || 6 * 60 * 60 * 1000));
 }

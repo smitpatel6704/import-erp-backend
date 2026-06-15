@@ -2,7 +2,55 @@ import { db } from '../db.js';
 import { Router } from 'express';
 import { createId } from '@paralleldrive/cuid2';
 import { createNotification, notificationRecipients } from '../services/notifications.js';
+import {
+    fetchCarrierTracking,
+    syncShipmentTracking,
+    trackingCarrierLabel,
+} from '../services/tracking.js';
 const router = Router();
+// GET /api/shipments/notification-users
+router.get('/notification-users', async (_req, res) => {
+    try {
+        const users = await db.query(`
+          SELECT id, name, email, role, department
+          FROM User
+          WHERE isActive = 1
+          ORDER BY name ASC
+        `);
+        return res.json({ data: users });
+    }
+    catch (error) {
+        console.error('Shipment notification users error:', error);
+        return res.status(500).json({ error: 'Failed to load notification users' });
+    }
+});
+// POST /api/shipments/tracking/lookup
+router.post('/tracking/lookup', async (req, res) => {
+    try {
+        const trackingNumber = String(req.body.trackingNumber || req.body.blNumber || '').trim().toUpperCase();
+        const shippingLine = String(req.body.shippingLine || '').trim();
+        if (!trackingNumber || !shippingLine)
+            return res.status(400).json({ error: 'Tracking number and shipping line are required' });
+        if (!trackingCarrierLabel(shippingLine))
+            return res.status(400).json({ error: 'Only Maersk and MSC tracking are supported' });
+        const result = await fetchCarrierTracking({
+            id: 'lookup',
+            trackingNumber,
+            blNumber: req.body.blNumber,
+            bookingNumber: req.body.bookingNumber,
+            containerNumber: req.body.containerNumber,
+            shippingLine,
+            status: 'draft',
+            destinationPort: null,
+            eta: null,
+        });
+        return res.json({ data: result });
+    }
+    catch (error) {
+        console.error('Shipment tracking lookup error:', error);
+        return res.status(502).json({ error: `Carrier tracking failed: ${String(error)}` });
+    }
+});
 // GET /api/shipments/[id]
 router.get('/:id', async (req, res) => {
     const { id } = req.params;
@@ -42,7 +90,7 @@ router.put('/:id', async (req, res) => {
     const { id } = req.params;
     try {
         const body = req.body;
-        const oldShipments = await db.query('SELECT status FROM Shipment WHERE id = ?', [id]);
+        const oldShipments = await db.query('SELECT status, bookingNumber, blNumber, shippingLine FROM Shipment WHERE id = ?', [id]);
         const oldShipment = oldShipments[0];
         const updates = [];
         const values = [];
@@ -62,6 +110,10 @@ router.put('/:id', async (req, res) => {
                     values.push(body[field]);
                 }
             }
+        }
+        if (body.notificationUserIds !== undefined) {
+            updates.push('notificationUserIds = ?::jsonb');
+            values.push(JSON.stringify(Array.isArray(body.notificationUserIds) ? body.notificationUserIds : []));
         }
         if (body.etd) {
             updates.push('etd = ?');
@@ -111,6 +163,15 @@ router.put('/:id', async (req, res) => {
                 emailEnabled: isHighPriority,
                 recipients: await notificationRecipients(id),
             });
+        }
+        const trackingIdentityChanged = oldShipment &&
+            (oldShipment.bookingNumber !== shipment.bookingNumber ||
+                oldShipment.blNumber !== shipment.blNumber ||
+                oldShipment.shippingLine !== shipment.shippingLine);
+        if (trackingIdentityChanged &&
+            trackingCarrierLabel(shipment.shippingLine) &&
+            (shipment.blNumber || shipment.bookingNumber)) {
+            Object.assign(shipment, await syncShipmentTracking(id, true));
         }
         return res.json({ data: shipment });
     }
@@ -231,10 +292,10 @@ router.post('/', async (req, res) => {
         const shipmentNumber = `SHP-${new Date().getFullYear()}-${String(nextNum).padStart(4, '0')}`;
         const id = createId();
         await db.execute(`
-      INSERT INTO Shipment (id, shipmentNumber, bookingNumber, blNumber, shippingLine, freightForwarder, vesselName, voyageNumber, etd, eta, actualArrival, originCountry, originPort, destinationPort, warehouseLocation, deliveryAddress, priority, status, shipmentValue, currency, companyId, exporterCompanyId, tags, internalNotes, goodsDescription, notes, isActive, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO Shipment (id, shipmentNumber, bookingNumber, blNumber, shippingLine, freightForwarder, vesselName, voyageNumber, etd, eta, actualArrival, originCountry, originPort, destinationPort, warehouseLocation, deliveryAddress, priority, status, shipmentValue, currency, companyId, exporterCompanyId, tags, internalNotes, goodsDescription, notes, notificationUserIds, isActive, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
     `, [
-            id, shipmentNumber, body.bookingNumber || null, body.blNumber || null, body.shippingLine || null, body.freightForwarder || null, body.vesselName || null, body.voyageNumber || null, body.etd ? new Date(body.etd) : null, body.eta ? new Date(body.eta) : null, body.actualArrival ? new Date(body.actualArrival) : null, body.originCountry || null, body.originPort || null, body.destinationPort || null, body.warehouseLocation || null, body.deliveryAddress || null, body.priority || 'normal', body.status || 'draft', body.shipmentValue || 0, body.currency || 'USD', body.companyId || null, body.exporterCompanyId || null, body.tags || null, body.internalNotes || null, body.goodsDescription || null, body.notes || null, body.isActive !== undefined ? (body.isActive ? 1 : 0) : 1, new Date(), new Date()
+            id, shipmentNumber, body.bookingNumber || null, body.blNumber || null, body.shippingLine || null, body.freightForwarder || null, body.vesselName || null, body.voyageNumber || null, body.etd ? new Date(body.etd) : null, body.eta ? new Date(body.eta) : null, body.actualArrival ? new Date(body.actualArrival) : null, body.originCountry || null, body.originPort || null, body.destinationPort || null, body.warehouseLocation || null, body.deliveryAddress || null, body.priority || 'normal', body.status || 'draft', body.shipmentValue || 0, body.currency || 'USD', body.companyId || null, body.exporterCompanyId || null, body.tags || null, body.internalNotes || null, body.goodsDescription || null, body.notes || null, JSON.stringify(Array.isArray(body.notificationUserIds) ? body.notificationUserIds : []), body.isActive !== undefined ? (body.isActive ? 1 : 0) : 1, new Date(), new Date()
         ]);
         for (const container of body.containers || []) {
             await db.execute(`
@@ -289,6 +350,10 @@ router.post('/', async (req, res) => {
       INSERT INTO TimelineEvent (id, shipmentId, event, description, location, timestamp)
       VALUES (?, ?, ?, ?, ?, ?)
     `, [tlId, id, 'Shipment Created', 'Draft shipment created in the system', body.originPort || 'N/A', new Date()]);
+        if (trackingCarrierLabel(shipment.shippingLine) &&
+            (shipment.blNumber || shipment.bookingNumber || (body.containers || []).some((container) => container.containerNumber))) {
+            Object.assign(shipment, await syncShipmentTracking(id, true));
+        }
         return res.status(201).json({ data: shipment });
     }
     catch (error) {

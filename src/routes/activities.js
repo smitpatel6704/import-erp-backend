@@ -7,9 +7,10 @@ router.get('/', async (req, res) => {
     try {
         const page = parseInt(req.query.page || '1');
         const limit = parseInt(req.query.limit || '20');
-        const action = req.query.action || '';
-        const entity = req.query.entity || '';
-        const userId = req.query.userId || '';
+    const action = req.query.action || '';
+    const entity = req.query.entity || '';
+    const userId = req.query.userId || '';
+    const adminOnly = req.query.adminOnly === 'true';
         const sortBy = req.query.sortBy || 'createdAt';
         const sortOrder = req.query.sortOrder || 'desc';
         const skip = (page - 1) * limit;
@@ -24,10 +25,22 @@ router.get('/', async (req, res) => {
             whereClause += ` AND entity IN (${entities.map(() => '?').join(',')})`;
             params.push(...entities);
         }
-        if (userId) {
-            whereClause += ' AND userId = ?';
-            params.push(userId);
-        }
+    if (userId) {
+      whereClause += ' AND userId = ?';
+      params.push(userId);
+    }
+    if (adminOnly) {
+      const adminUsers = await db.query(
+        `SELECT id FROM User WHERE role IN ('admin', 'super_admin')`
+      );
+
+      if (adminUsers.length === 0) {
+        whereClause += ' AND 1 = 0';
+      } else {
+        whereClause += ` AND userId IN (${adminUsers.map(() => '?').join(', ')})`;
+        params.push(...adminUsers.map((user) => user.id));
+      }
+    }
         const countRows = await db.query(`SELECT COUNT(*) as c FROM Activity WHERE ${whereClause}`, params);
         const total = countRows[0].c;
         const allowedSort = ['createdAt', 'action', 'entity'].includes(sortBy) ? sortBy : 'createdAt';

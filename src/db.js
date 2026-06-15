@@ -31,7 +31,7 @@ const schemaIdentifiers = [
     'storageDays', 'stuffingType', 'taxAmount', 'taxRate', 'timelineEvents', 'totalAmount',
     'totalValue',
     'taxNumber', 'bankDetails', 'customFields', 'documentIds', 'transactionDate', 'transportVendor',
-    'unitPrice', 'unitType', 'updatedAt', 'uploadedAt',
+    'unitPrice', 'unitType', 'updatedAt', 'uploadedAt', 'notificationUserIds',
     'uploadedBy', 'userId', 'vehicleNumber', 'vendorName', 'verifiedAt', 'vesselName',
     'voyageNumber', 'warehouseEntry', 'warehouseLocation', 'weightCapacity',
 ].sort((a, b) => b.length - a.length);

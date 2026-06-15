@@ -1,7 +1,8 @@
 import { createId } from '@paralleldrive/cuid2';
-import { chromium } from 'playwright-core';
+import { chromium as playwrightChromium } from 'playwright-core';
 import { db } from '../db.js';
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+import { createNotification, notificationRecipients } from './notifications.js';
+const TRACKING_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MSC_TRACKING_PAGE = 'https://www.msc.com/en/track-a-shipment';
 const MSC_TRACKING_API = 'https://www.msc.com/api/feature/tools/TrackingInfo';
 const MSC_USER_AGENT = 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36';
@@ -24,27 +25,116 @@ export const trackingCarrierLabel = (shippingLine) => {
         return 'MSC';
     return null;
 };
+const normalizeTrackingReference = (value) => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+const isContainerNumber = (value) => /^[A-Z]{4}\d{7}$/.test(value);
+const isMaerskDocumentNumber = (value) => /^[A-Z0-9]{9}$/.test(value);
+const trackingReferencesForShipment = (shipment, carrier) => {
+    const containerNumbers = [
+        ...(shipment.containerNumbers || []),
+        shipment.containerNumber,
+    ];
+    const references = carrier === 'Maersk'
+        ? [
+            shipment.trackingNumber,
+            shipment.blNumber,
+            shipment.bookingNumber,
+            ...containerNumbers,
+        ]
+        : [
+            shipment.trackingNumber,
+            shipment.blNumber,
+            ...containerNumbers,
+            shipment.bookingNumber,
+        ];
+    return [...new Set(references.map(normalizeTrackingReference).filter(Boolean))];
+};
+const validTrackingReferencesForShipment = (shipment, carrier) => {
+    const references = trackingReferencesForShipment(shipment, carrier);
+    if (carrier === 'Maersk') {
+        return references.filter((reference) => isContainerNumber(reference) || isMaerskDocumentNumber(reference));
+    }
+    return references;
+};
+const trackingReferenceForShipment = (shipment, carrier) => validTrackingReferencesForShipment(shipment, carrier)[0] || null;
 export const trackingUrlForShipment = (shipment) => {
-    const blNumber = shipment.blNumber?.trim();
     const carrier = trackingCarrierLabel(shipment.shippingLine);
-    if (!blNumber || !carrier)
+    const trackingReference = carrier ? trackingReferenceForShipment(shipment, carrier) : null;
+    if (!trackingReference || !carrier)
         return null;
-    const encodedBlNumber = encodeURIComponent(blNumber);
+    const encodedTrackingReference = encodeURIComponent(trackingReference);
     if (carrier === 'Maersk')
-        return `https://www.maersk.com/tracking/${encodedBlNumber}`;
+        return `https://www.maersk.com/tracking/${encodedTrackingReference}`;
     if (carrier === 'MSC')
-        return `https://www.msc.com/track-a-shipment?trackingNumber=${encodedBlNumber}`;
+        return `https://www.msc.com/track-a-shipment?trackingNumber=${encodedTrackingReference}`;
     return null;
 };
 const statusLabel = (status) => status
     .split('_')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(' ');
-const chromeExecutablePath = () => process.env.CHROME_EXECUTABLE_PATH ||
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const maerskScraperHeadless = () => process.env.MAERSK_SCRAPER_HEADLESS === 'true';
+const shipmentStatusOrder = [
+    'draft',
+    'booking_confirmed',
+    'at_pol',
+    'vessel_departed',
+    'in_transit',
+    'at_pod',
+    'customs_clearance',
+    'duty_paid',
+    'in_transport',
+    'offloaded',
+    'delivered',
+    'closed',
+];
+const shipmentStatusFromCarrier = (result) => {
+    const value = `${result?.status || ''} ${result?.lastEvent || ''}`.toLowerCase();
+    if (/delivered|empty received/.test(value))
+        return 'delivered';
+    if (/arrived|arrival|discharg|import to consignee/.test(value))
+        return 'at_pod';
+    if (/in transit/.test(value))
+        return 'in_transit';
+    if (/depart|loaded on vessel|container departure|export loaded/.test(value))
+        return 'vessel_departed';
+    if (/gate in|export received|received at cy|loaded/.test(value))
+        return 'at_pol';
+    return null;
+};
+const progressiveShipmentStatus = (currentStatus, carrierStatus) => {
+    if (!carrierStatus)
+        return currentStatus;
+    const currentIndex = shipmentStatusOrder.indexOf(currentStatus);
+    const carrierIndex = shipmentStatusOrder.indexOf(carrierStatus);
+    if (carrierIndex < 0 || (currentIndex >= 0 && carrierIndex <= currentIndex))
+        return currentStatus;
+    return carrierStatus;
+};
+const localChromeExecutablePath = () => process.env.CHROME_EXECUTABLE_PATH ||
+    (process.platform === 'darwin'
+        ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+        : undefined);
+const isServerless = () => Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const maerskScraperHeadless = () => isServerless() || process.env.MAERSK_SCRAPER_HEADLESS !== 'false';
 const MAERSK_SCRAPER_TIMEOUT_MS = 25000;
 export const maerskScraperMode = () => (maerskScraperHeadless() ? 'headless' : 'visible');
+const maerskBrowserOptions = async () => {
+    if (isServerless() || process.platform === 'linux') {
+        const { default: serverlessChromium } = await import('@sparticuz/chromium');
+        return {
+            headless: true,
+            executablePath: await serverlessChromium.executablePath(),
+            args: [
+                ...serverlessChromium.args,
+                '--disable-blink-features=AutomationControlled',
+            ],
+        };
+    }
+    return {
+        headless: maerskScraperHeadless(),
+        executablePath: localChromeExecutablePath(),
+        args: ['--disable-blink-features=AutomationControlled'],
+    };
+};
 const cleanText = (value) => value
     .replace(/\r/g, '')
     .split('\n')
@@ -144,7 +234,8 @@ const formatMscEventDate = (value) => {
     });
 };
 function parseMaerskApiTracking(data, url) {
-    const container = data?.containers?.[0];
+    const carrierContainers = data?.containers || [];
+    const container = carrierContainers[0];
     const locations = container?.locations || [];
     const events = locations.flatMap((location) => (location.events || []).map((event) => ({
         ...event,
@@ -158,6 +249,13 @@ function parseMaerskApiTracking(data, url) {
     const latestLocation = eventLocation(latestEvent?.location);
     const origin = data?.origin?.city || data?.origin?.terminal || null;
     const destination = data?.destination?.city || data?.destination?.terminal || null;
+    const originCountry = data?.origin?.country || null;
+    const departureEvent = events.find((event) => String(event.activity || '').includes('DEPARTURE'));
+    const arrivalEvents = events.filter((event) => String(event.activity || '').includes('ARRIVAL'));
+    const arrivalEvent = arrivalEvents[arrivalEvents.length - 1];
+    const transportEvent = [...events].reverse().find((event) => event.vessel_name || event.vessel || event.transport_name);
+    const vesselName = transportEvent?.vessel_name || transportEvent?.vessel || transportEvent?.transport_name || null;
+    const voyageNumber = transportEvent?.voyage_num || transportEvent?.voyage_number || null;
     const status = latestLabel === 'Discharge' && destination ? `Arrived at ${destination}` : latestLabel;
     const lastEvent = latestEvent
         ? `${latestLabel}${latestLocation ? ` • ${latestLocation}` : ''}${latestEvent.event_time ? ` • ${formatDate(latestEvent.event_time)}` : ''}`
@@ -186,7 +284,18 @@ function parseMaerskApiTracking(data, url) {
     return {
         status,
         location: latestLocation,
-        eta: null,
+        eta: arrivalEvent?.event_time ? new Date(arrivalEvent.event_time) : null,
+        etd: departureEvent?.event_time ? new Date(departureEvent.event_time) : null,
+        origin,
+        originCountry,
+        destination,
+        vesselName,
+        voyageNumber,
+        containers: carrierContainers.map((item) => ({
+            containerNumber: item?.container_num || '',
+            containerSize: item?.container_size ? `${item.container_size}FT` : '',
+            containerType: item?.container_type || '',
+        })).filter((item) => item.containerNumber),
         lastEvent,
         rawDetails: rawDetails.slice(0, 12000),
         error: null,
@@ -210,6 +319,17 @@ function parseMaerskRenderedText(rawText, url) {
         status: arrivedLine || status,
         location: arrivedLine?.replace(/^Arrived at /i, '') || null,
         eta: null,
+        etd: null,
+        origin: null,
+        originCountry: null,
+        destination: arrivedLine?.replace(/^Arrived at /i, '') || null,
+        vesselName: null,
+        voyageNumber: null,
+        containers: containerLine ? [{
+            containerNumber: containerLine.match(/^[A-Z]{4}\d{7}/)?.[0] || '',
+            containerSize: '',
+            containerType: '',
+        }] : [],
         lastEvent: lastEvent || status,
         rawDetails: [
             containerLine ? `Container: ${containerLine}` : null,
@@ -223,20 +343,34 @@ function parseMscApiTracking(data, trackingNumber, url) {
     const payload = data?.Data || data?.data || data;
     const billOfLading = payload?.BillOfLadings?.[0] || payload?.billOfLadings?.[0] || payload?.BillOfLading || {};
     const general = billOfLading?.GeneralTrackingInfo || billOfLading?.generalTrackingInfo || {};
-    const container = billOfLading?.ContainersInfo?.[0] || billOfLading?.containersInfo?.[0] || {};
+    const carrierContainers = billOfLading?.ContainersInfo || billOfLading?.containersInfo || [];
+    const container = carrierContainers[0] || {};
     const events = (container?.Events || container?.events || [])
         .slice()
         .sort((a, b) => Number(a?.Order ?? a?.order ?? 0) - Number(b?.Order ?? b?.order ?? 0));
     const latestEvent = events[events.length - 1];
+    const vesselEvent = [...events].reverse().find((event) => {
+        const description = event?.Description || event?.description || '';
+        return /loaded on vessel|discharged from vessel/i.test(description);
+    });
+    const vesselDetails = vesselEvent?.Detail || vesselEvent?.detail;
+    const vesselDetailValue = Array.isArray(vesselDetails)
+        ? vesselDetails.find((detail) => String(detail).includes('/')) || vesselDetails.filter(Boolean).join(' / ')
+        : vesselDetails || '';
+    const vesselMatch = String(vesselDetailValue).match(/^(.+?)\s*\/\s*([A-Z0-9-]+)$/i);
     const containerNumber = container?.ContainerNumber || container?.containerNumber || payload?.TrackingNumber || trackingNumber;
     const containerType = container?.ContainerType || container?.containerType || '';
     const latestLocation = latestEvent?.Location || latestEvent?.location || container?.LatestMove || container?.latestMove || null;
     const latestDescription = latestEvent?.Description || latestEvent?.description || (container?.Delivered ? 'Delivered' : 'Tracking details available');
     const latestDate = latestEvent?.Date || latestEvent?.date || null;
-    const eta = parseMscDate(container?.PodEtaDate || general?.FinalPodEtaDate);
+    const departureEvent = events.find((event) => /loaded on vessel|export.*vessel/i.test(event?.Description || event?.description || ''));
+    const arrivalEvent = [...events].reverse().find((event) => /discharged from vessel|import.*discharge/i.test(event?.Description || event?.description || ''));
+    const eta = parseMscDate(container?.PodEtaDate || general?.FinalPodEtaDate || arrivalEvent?.Date || arrivalEvent?.date);
     const billNumber = billOfLading?.BillOfLadingNumber || billOfLading?.billOfLadingNumber || '';
     const from = general?.ShippedFrom || general?.PortOfLoad || '';
     const to = general?.ShippedTo || general?.PortOfDischarge || '';
+    const vesselName = general?.VesselName || general?.vesselName || container?.VesselName || container?.vesselName || vesselMatch?.[1]?.trim() || null;
+    const voyageNumber = general?.VoyageNumber || general?.voyageNumber || container?.VoyageNumber || container?.voyageNumber || vesselMatch?.[2]?.trim() || null;
     const status = container?.Delivered || billOfLading?.Delivered ? 'Delivered' : latestDescription;
     const lastEvent = [
         latestDescription,
@@ -273,6 +407,17 @@ function parseMscApiTracking(data, trackingNumber, url) {
         status,
         location: latestLocation,
         eta,
+        etd: parseMscDate(general?.PolDepartureDate || general?.polDepartureDate || departureEvent?.Date || departureEvent?.date),
+        origin: from || null,
+        originCountry: from.includes(',') ? from.split(',').pop().trim() : null,
+        destination: to || null,
+        vesselName,
+        voyageNumber,
+        containers: carrierContainers.map((item) => ({
+            containerNumber: item?.ContainerNumber || item?.containerNumber || '',
+            containerSize: '',
+            containerType: item?.ContainerType || item?.containerType || '',
+        })).filter((item) => item.containerNumber),
         lastEvent: lastEvent || null,
         rawDetails: rawDetails.slice(0, 12000),
         error: null,
@@ -290,7 +435,7 @@ async function getMscSessionCookies() {
     });
     return cookieHeaderFromSetCookie(getSetCookieHeaders(res.headers));
 }
-async function fetchMscTracking(trackingNumber, url) {
+export async function fetchMscTracking(trackingNumber, url) {
     const cookie = await getMscSessionCookies();
     let lastError = '';
     for (const payload of mscPayloadVariants(trackingNumber)) {
@@ -332,12 +477,8 @@ async function fetchMscTracking(trackingNumber, url) {
         url,
     };
 }
-async function scrapeMaerskTrackingPage(url) {
-    const browser = await chromium.launch({
-        headless: maerskScraperHeadless(),
-        executablePath: chromeExecutablePath(),
-        args: ['--disable-blink-features=AutomationControlled'],
-    });
+export async function scrapeMaerskTrackingPage(url) {
+    const browser = await playwrightChromium.launch(await maerskBrowserOptions());
     try {
         const context = await browser.newContext({
             viewport: { width: 1600, height: 1000 },
@@ -396,8 +537,9 @@ export async function ensureShipmentTrackingColumns() {
 }
 export async function fetchCarrierTracking(shipment) {
     const carrier = trackingCarrierLabel(shipment.shippingLine);
+    const trackingReference = carrier ? trackingReferenceForShipment(shipment, carrier) : null;
     const url = trackingUrlForShipment(shipment);
-    if (!carrier || !shipment.blNumber) {
+    if (!carrier) {
         return {
             status: statusLabel(shipment.status),
             location: shipment.destinationPort,
@@ -406,6 +548,24 @@ export async function fetchCarrierTracking(shipment) {
             rawDetails: null,
             error: 'Missing carrier or BL number',
             url,
+        };
+    }
+    if (!trackingReference) {
+        const suppliedReferences = trackingReferencesForShipment(shipment, carrier);
+        const invalidMaerskReference = carrier === 'Maersk' && suppliedReferences.length > 0;
+        const message = invalidMaerskReference
+            ? 'Maersk tracking requires a 9-character booking/BL number or an 11-character container number.'
+            : 'Tracking needs a BL, booking, or container number.';
+        return {
+            status: statusLabel(shipment.status),
+            location: shipment.destinationPort,
+            eta: shipment.eta ? new Date(shipment.eta) : null,
+            lastEvent: message,
+            rawDetails: invalidMaerskReference
+                ? `Rejected Maersk reference: ${suppliedReferences.join(', ')}`
+                : null,
+            error: message,
+            url: null,
         };
     }
     if (carrier === 'Maersk' && url) {
@@ -424,9 +584,9 @@ export async function fetchCarrierTracking(shipment) {
             };
         }
     }
-    if (carrier === 'MSC' && shipment.blNumber && url) {
+    if (carrier === 'MSC' && url) {
         try {
-            return await fetchMscTracking(shipment.blNumber, url);
+            return await fetchMscTracking(trackingReference, url);
         }
         catch (error) {
             return {
@@ -456,10 +616,15 @@ export async function syncShipmentTracking(id, force = false) {
     const shipment = shipments[0];
     if (!shipment)
         return null;
+    const containers = await db.query(
+        'SELECT containerNumber FROM Container WHERE shipmentId = ? AND isActive = 1 ORDER BY createdAt DESC',
+        [id],
+    );
+    shipment.containerNumbers = containers.map((container) => container.containerNumber).filter(Boolean);
     const lastChecked = shipment.carrierTrackingLastCheckedAt
         ? new Date(shipment.carrierTrackingLastCheckedAt).getTime()
         : 0;
-    if (!force && lastChecked && Date.now() - lastChecked < ONE_DAY_MS) {
+    if (!force && lastChecked && Date.now() - lastChecked < TRACKING_INTERVAL_MS) {
         return shipment;
     }
     const result = await fetchCarrierTracking(shipment);
@@ -471,12 +636,17 @@ export async function syncShipmentTracking(id, force = false) {
         result.location = shipment.carrierTrackingLocation || result.location;
         result.lastEvent = shipment.carrierTrackingLastEvent || result.lastEvent;
         result.rawDetails = shipment.carrierTrackingRawDetails;
-        result.error = 'Maersk scrape returned no result; kept previous tracking details';
+        result.error = `${trackingCarrierLabel(shipment.shippingLine) || 'Carrier'} tracking returned no result; kept previous tracking details`;
     }
     const now = new Date();
-    const nextCheck = new Date(now.getTime() + ONE_DAY_MS);
+    const nextCheck = new Date(now.getTime() + TRACKING_INTERVAL_MS);
+    const nextStatus = result.error
+        ? shipment.status
+        : progressiveShipmentStatus(shipment.status, shipmentStatusFromCarrier(result));
+    const statusChanged = nextStatus !== shipment.status;
     await db.execute(`UPDATE Shipment
-     SET carrierTrackingStatus = ?,
+     SET status = ?,
+         carrierTrackingStatus = ?,
          carrierTrackingLocation = ?,
          carrierTrackingEta = ?,
          carrierTrackingLastEvent = ?,
@@ -487,6 +657,7 @@ export async function syncShipmentTracking(id, force = false) {
          carrierTrackingRawDetails = ?,
          updatedAt = ?
      WHERE id = ?`, [
+        nextStatus,
         result.status,
         result.location,
         result.eta,
@@ -509,36 +680,93 @@ export async function syncShipmentTracking(id, force = false) {
         result.location,
         now,
     ]);
+    if (statusChanged) {
+        await createNotification({
+            title: 'Shipment status updated',
+            message: `${shipment.shipmentNumber} changed from ${statusLabel(shipment.status)} to ${statusLabel(nextStatus)}. ${result.lastEvent || ''}`.trim(),
+            category: 'shipment',
+            type: ['at_pod', 'delivered'].includes(nextStatus) ? 'warning' : 'info',
+            priority: ['at_pod', 'delivered'].includes(nextStatus) ? 'high' : 'normal',
+            actionUrl: `/shipments/${id}`,
+            emailEnabled: true,
+            recipients: await notificationRecipients(id, { includeCompanyContacts: false }),
+            dedupeKey: `tracking-status:${id}:${nextStatus}`,
+        }).catch((error) => {
+            console.error(`Tracking status notification failed for ${id}:`, error);
+        });
+        const statusEventId = createId();
+        await db.execute(`INSERT INTO TimelineEvent (id, shipmentId, event, description, location, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?)`, [
+            statusEventId,
+            id,
+            'Shipment Status Updated',
+            `Carrier tracking changed status from ${statusLabel(shipment.status)} to ${statusLabel(nextStatus)}.`,
+            result.location,
+            now,
+        ]);
+    }
     const updated = await db.query('SELECT * FROM Shipment WHERE id = ?', [id]);
     return updated[0] || null;
 }
-export async function syncDueShipmentTrackings() {
+export async function syncDueShipmentTrackings(carrier = null) {
     await ensureShipmentTrackingColumns();
+    const carrierFilter = carrier === 'MSC'
+        ? `AND (
+            shippingLine LIKE '%msc%'
+            OR shippingLine LIKE '%mediterranean shipping%'
+          )`
+        : carrier === 'Maersk'
+            ? `AND (
+                shippingLine LIKE '%maersk%'
+                OR shippingLine LIKE '%mersk%'
+              )`
+        : '';
     const dueShipments = await db.query(`SELECT *
      FROM Shipment
      WHERE isActive = 1
-       AND blNumber IS NOT NULL
-       AND blNumber <> ''
+       AND (
+         (blNumber IS NOT NULL AND blNumber <> '')
+         OR (bookingNumber IS NOT NULL AND bookingNumber <> '')
+         OR EXISTS (
+           SELECT 1
+           FROM Container
+           WHERE Container.shipmentId = Shipment.id
+             AND Container.isActive = 1
+             AND Container.containerNumber IS NOT NULL
+             AND Container.containerNumber <> ''
+         )
+       )
        AND shippingLine IS NOT NULL
        AND shippingLine <> ''
+       AND (
+         shippingLine LIKE '%maersk%'
+         OR shippingLine LIKE '%mersk%'
+         OR shippingLine LIKE '%msc%'
+         OR shippingLine LIKE '%mediterranean shipping%'
+       )
        AND status NOT IN ('delivered', 'closed')
+       ${carrierFilter}
        AND (
          carrierTrackingLastCheckedAt IS NULL
-         OR carrierTrackingLastCheckedAt <= NOW() - INTERVAL '1 day'
-       )
-     LIMIT 50`);
+         OR carrierTrackingLastCheckedAt <= NOW() - INTERVAL '6 hours'
+       )`);
     for (const shipment of dueShipments) {
-        await syncShipmentTracking(shipment.id);
+        try {
+            await syncShipmentTracking(shipment.id);
+        }
+        catch (error) {
+            console.error(`Scheduled tracking failed for shipment ${shipment.id}:`, error);
+        }
     }
     return dueShipments.length;
 }
 export function startShipmentTrackingScheduler() {
     void syncDueShipmentTrackings().catch((error) => {
-        console.error('Initial shipment tracking sync failed:', error);
+        console.error('Initial carrier tracking sync failed:', error);
     });
     setInterval(() => {
         void syncDueShipmentTrackings().catch((error) => {
-            console.error('Scheduled shipment tracking sync failed:', error);
+            console.error('Scheduled carrier tracking sync failed:', error);
         });
-    }, 60 * 60 * 1000);
+    }, TRACKING_INTERVAL_MS);
 }

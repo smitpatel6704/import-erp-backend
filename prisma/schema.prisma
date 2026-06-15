@@ -114,6 +114,7 @@ model Shipment {
   internalNotes     String?
   goodsDescription  String?
   notes             String?
+  notificationUserIds Json             @default("[]")
   isActive          Boolean           @default(true)
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt

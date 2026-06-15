@@ -14,8 +14,8 @@
   ],
   "crons": [
     {
-      "path": "/api/notifications/run-reminders",
-      "schedule": "0 0 * * *"
+      "path": "/api/cron/daily",
+      "schedule": "0 */6 * * *"
     }
   ]
 }

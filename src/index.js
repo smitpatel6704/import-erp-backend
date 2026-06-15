@@ -1,6 +1,7 @@
 import app from './app.js';
 import { ensureFeatureSchema } from './services/schema.js';
 import { startNotificationScheduler } from './services/notifications.js';
+import { startShipmentTrackingScheduler } from './services/tracking.js';
 const PORT = process.env.PORT || 5001;
 
 async function start() {
@@ -8,6 +9,7 @@ async function start() {
     app.listen(PORT, () => {
         console.log(`NEXPORT ERP server running on port ${PORT}`);
         startNotificationScheduler();
+        startShipmentTrackingScheduler();
     });
 }
 

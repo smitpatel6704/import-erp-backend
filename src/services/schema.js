@@ -12,6 +12,7 @@ const statements = [
   `ALTER TABLE "Company" ADD COLUMN IF NOT EXISTS "customFields" JSONB NOT NULL DEFAULT '[]'::jsonb`,
   `ALTER TABLE "Shipment" ADD COLUMN IF NOT EXISTS "goodsDescription" TEXT`,
   `ALTER TABLE "Shipment" ADD COLUMN IF NOT EXISTS "notes" TEXT`,
+  `ALTER TABLE "Shipment" ADD COLUMN IF NOT EXISTS "notificationUserIds" JSONB NOT NULL DEFAULT '[]'::jsonb`,
   `ALTER TABLE "Container" ADD COLUMN IF NOT EXISTS "goodsDescription" TEXT`,
   `ALTER TABLE "ShipmentItem" ADD COLUMN IF NOT EXISTS "containerId" TEXT`,
   `ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS "priority" VARCHAR(20) NOT NULL DEFAULT 'normal'`,
