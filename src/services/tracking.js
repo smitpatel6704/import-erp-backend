@@ -114,6 +114,8 @@ const localChromeExecutablePath = () => process.env.CHROME_EXECUTABLE_PATH ||
         ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
         : undefined);
 const isServerless = () => Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const deploymentRuntimeLabel = () => process.env.VERCEL ? 'Vercel serverless' : process.env.AWS_LAMBDA_FUNCTION_NAME ? 'AWS Lambda' : 'local server';
+const maerskScraperEnabled = () => !isServerless() || process.env.ENABLE_MAERSK_SCRAPER_ON_VERCEL === 'true';
 const maerskScraperHeadless = () => isServerless() || process.env.MAERSK_SCRAPER_HEADLESS !== 'false';
 const MAERSK_SCRAPER_TIMEOUT_MS = 25000;
 export const maerskScraperMode = () => (maerskScraperHeadless() ? 'headless' : 'visible');
@@ -569,17 +571,31 @@ export async function fetchCarrierTracking(shipment) {
         };
     }
     if (carrier === 'Maersk' && url) {
-        try {
-            return await scrapeMaerskTrackingPage(url);
-        }
-        catch (error) {
+        if (!maerskScraperEnabled()) {
             return {
                 status: statusLabel(shipment.status),
                 location: shipment.destinationPort,
                 eta: shipment.eta ? new Date(shipment.eta) : null,
-                lastEvent: `Maersk tracking page scrape failed: ${String(error)}`,
-                rawDetails: null,
-                error: 'Maersk tracking page scrape failed',
+                lastEvent: 'Maersk public tracking scraping is disabled on Vercel serverless. Use manual entry or configure an official Maersk tracking API integration.',
+                rawDetails: `Reference: ${trackingReference}\nURL: ${url}\nRuntime: ${deploymentRuntimeLabel()}`,
+                error: 'Maersk public tracking is not available on Vercel serverless',
+                url,
+            };
+        }
+        try {
+            return await scrapeMaerskTrackingPage(url);
+        }
+        catch (error) {
+            const message = String(error?.message || error);
+            return {
+                status: statusLabel(shipment.status),
+                location: shipment.destinationPort,
+                eta: shipment.eta ? new Date(shipment.eta) : null,
+                lastEvent: `Maersk tracking page scrape failed on ${deploymentRuntimeLabel()}: ${message}`,
+                rawDetails: error?.stack || message,
+                error: isServerless()
+                    ? 'Maersk tracking is blocked or timed out in the Vercel serverless runtime'
+                    : 'Maersk tracking page scrape failed',
                 url,
             };
         }
