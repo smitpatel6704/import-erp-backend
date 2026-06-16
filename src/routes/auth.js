@@ -3,13 +3,18 @@ import { createId } from '@paralleldrive/cuid2';
 import { db, pool } from '../db.js';
 import {
   authenticate,
+  createOtpCode,
+  createPendingOtpToken,
   createSessionToken,
+  hashOtpCode,
   hashInvitationToken,
   hashPassword,
   normalizePermissions,
+  verifyPendingOtpToken,
   verifyPassword,
 } from '../services/auth.js';
 import { recordActivity } from '../services/audit.js';
+import { sendEmail } from '../services/email.js';
 
 const router = Router();
 
@@ -23,6 +28,27 @@ const publicUser = (user) => ({
   phone: user.phone,
   permissions: normalizePermissions(user.permissions),
   isActive: user.isActive,
+});
+
+const maskEmail = (value) => {
+  const [name = '', domain = ''] = String(value || '').split('@');
+  if (!name || !domain) return 'your email';
+  const visible = name.length <= 2 ? name[0] : `${name[0]}${name[name.length - 1]}`;
+  return `${visible.padEnd(Math.min(name.length, 4), '*')}@${domain}`;
+};
+
+const sendLoginOtpEmail = (user, code) => sendEmail({
+  to: user.email,
+  subject: 'Your Nexport ERP login OTP',
+  text: `Your Nexport ERP login OTP is ${code}. It expires in 5 minutes.`,
+  html: `
+    <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111827">
+      <h2 style="margin:0 0 12px">Nexport ERP login OTP</h2>
+      <p>Use this code to finish signing in:</p>
+      <p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:18px 0">${code}</p>
+      <p>This code expires in 5 minutes. If you did not request it, you can ignore this email.</p>
+    </div>
+  `,
 });
 
 router.get('/status', async (_req, res) => {
@@ -64,17 +90,67 @@ router.post('/login', async (req, res) => {
     const [user] = await db.query('SELECT * FROM User WHERE email = ?', [email]);
     if (!user || !user.isActive || !verifyPassword(req.body.password, user.password))
       return res.status(401).json({ error: 'Invalid email or password' });
-    await db.execute('UPDATE User SET lastLoginAt = ?, updatedAt = ? WHERE id = ?', [new Date(), new Date(), user.id]);
+    const code = createOtpCode();
+    const otpId = createId();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    await db.execute(`
+      INSERT INTO LoginOtp (id, userId, codeHash, expiresAt, createdAt)
+      VALUES (?, ?, ?, ?, ?)
+    `, [otpId, user.id, hashOtpCode(code), expiresAt, new Date()]);
+    await sendLoginOtpEmail(user, code);
+    return res.json({
+      data: {
+        otpRequired: true,
+        otpToken: createPendingOtpToken(user),
+        maskedEmail: maskEmail(user.email),
+      },
+    });
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    if (message.includes('SMTP is not configured'))
+      return res.status(500).json({ error: 'Email OTP is not configured. Set SMTP_USER and SMTP_PASS in backend/.env.' });
+    console.error('Login OTP error:', error);
+    return res.status(500).json({ error: 'Unable to send login OTP' });
+  }
+});
+
+router.post('/verify-email-otp', async (req, res) => {
+  try {
+    const pending = verifyPendingOtpToken(String(req.body.otpToken || ''));
+    const code = String(req.body.code || '').trim();
+    if (!pending?.sub)
+      return res.status(401).json({ error: 'Password verification expired. Please sign in again.' });
+    if (!/^\d{6}$/.test(code))
+      return res.status(400).json({ error: 'Enter the 6 digit OTP from your email' });
+    const [otp] = await db.query(`
+      SELECT *
+      FROM LoginOtp
+      WHERE userId = ?
+        AND codeHash = ?
+        AND consumedAt IS NULL
+        AND expiresAt > ?
+      ORDER BY createdAt DESC
+      LIMIT 1
+    `, [pending.sub, hashOtpCode(code), new Date()]);
+    if (!otp)
+      return res.status(401).json({ error: 'Invalid or expired OTP' });
+    const [user] = await db.query('SELECT * FROM User WHERE id = ? AND isActive = 1', [pending.sub]);
+    if (!user)
+      return res.status(401).json({ error: 'Account is inactive or unavailable' });
+    const now = new Date();
+    await db.execute('UPDATE LoginOtp SET consumedAt = ? WHERE id = ?', [now, otp.id]);
+    await db.execute('UPDATE User SET lastLoginAt = ?, updatedAt = ? WHERE id = ?', [now, now, user.id]);
     await recordActivity({
       userId: user.id,
       action: 'login',
       entity: 'user',
       entityId: user.id,
-      details: `Logged in as ${user.email}`,
+      details: `Logged in with email OTP as ${user.email}`,
       ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
     });
     return res.json({ data: { token: createSessionToken(user), user: publicUser(user) } });
   } catch (error) {
+    console.error('Email OTP verification error:', error);
     return res.status(500).json({ error: String(error) });
   }
 });

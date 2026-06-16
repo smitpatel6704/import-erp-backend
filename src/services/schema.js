@@ -35,6 +35,16 @@ const statements = [
     "createdAt" TIMESTAMP NOT NULL DEFAULT NOW()
   )`,
   `CREATE INDEX IF NOT EXISTS "UserInvitation_userId_idx" ON "UserInvitation" ("userId")`,
+  `CREATE TABLE IF NOT EXISTS "LoginOtp" (
+    "id" TEXT PRIMARY KEY,
+    "userId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+    "codeHash" TEXT NOT NULL,
+    "expiresAt" TIMESTAMP NOT NULL,
+    "consumedAt" TIMESTAMP,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE INDEX IF NOT EXISTS "LoginOtp_userId_idx" ON "LoginOtp" ("userId", "expiresAt")`,
+  `DELETE FROM "LoginOtp" WHERE "expiresAt" < NOW() - INTERVAL '1 day'`,
   `INSERT INTO "UserInvitation" ("tokenHash", "userId", "expiresAt")
     SELECT "passwordSetupTokenHash", "id", "passwordSetupExpiresAt"
     FROM "User"

@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
+import { createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'crypto';
 import { db } from '../db.js';
 
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
@@ -36,6 +36,11 @@ export const createPendingOtpToken = (user) => {
   }));
   return `${payload}.${sign(payload)}`;
 };
+
+export const createOtpCode = () => String(randomInt(0, 1000000)).padStart(6, '0');
+
+export const hashOtpCode = (code) =>
+  createHmac('sha256', secret()).update(String(code || '').trim()).digest('hex');
 
 const parseSessionToken = (token) => {
   const [payload, signature] = String(token || '').split('.');
