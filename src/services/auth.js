@@ -28,6 +28,15 @@ export const createSessionToken = (user) => {
   return `${payload}.${sign(payload)}`;
 };
 
+export const createPendingOtpToken = (user) => {
+  const payload = encode(JSON.stringify({
+    sub: user.id,
+    purpose: 'otp_login',
+    exp: Math.floor(Date.now() / 1000) + 5 * 60,
+  }));
+  return `${payload}.${sign(payload)}`;
+};
+
 const parseSessionToken = (token) => {
   const [payload, signature] = String(token || '').split('.');
   if (!payload || !signature) return null;
@@ -36,6 +45,13 @@ const parseSessionToken = (token) => {
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
   const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
   if (!parsed.sub || parsed.exp < Math.floor(Date.now() / 1000)) return null;
+  return parsed;
+};
+
+export const verifyPendingOtpToken = (token) => {
+  const parsed = parseSessionToken(token);
+  if (!parsed || parsed.purpose !== 'otp_login')
+    return null;
   return parsed;
 };
 
@@ -96,4 +112,3 @@ export const requireModulePermission = (module) => (req, res, next) => {
     return res.status(403).json({ error: `You do not have ${writeRequest ? 'edit' : 'view'} access to ${module}` });
   return next();
 };
-

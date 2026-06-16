@@ -9,6 +9,7 @@ import {
   normalizePermissions,
   verifyPassword,
 } from '../services/auth.js';
+import { recordActivity } from '../services/audit.js';
 
 const router = Router();
 
@@ -43,6 +44,14 @@ router.post('/bootstrap', async (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?)
     `, [id, email.toLowerCase(), name, hashPassword(password), 'admin', JSON.stringify([]), 1, new Date(), new Date(), new Date()]);
     const [user] = await db.query('SELECT * FROM User WHERE id = ?', [id]);
+    await recordActivity({
+      userId: user.id,
+      action: 'create',
+      entity: 'user',
+      entityId: user.id,
+      details: `Created initial administrator ${user.email}`,
+      ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
+    });
     return res.status(201).json({ data: { token: createSessionToken(user), user: publicUser(user) } });
   } catch (error) {
     return res.status(500).json({ error: String(error) });
@@ -56,6 +65,14 @@ router.post('/login', async (req, res) => {
     if (!user || !user.isActive || !verifyPassword(req.body.password, user.password))
       return res.status(401).json({ error: 'Invalid email or password' });
     await db.execute('UPDATE User SET lastLoginAt = ?, updatedAt = ? WHERE id = ?', [new Date(), new Date(), user.id]);
+    await recordActivity({
+      userId: user.id,
+      action: 'login',
+      entity: 'user',
+      entityId: user.id,
+      details: `Logged in as ${user.email}`,
+      ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
+    });
     return res.json({ data: { token: createSessionToken(user), user: publicUser(user) } });
   } catch (error) {
     return res.status(500).json({ error: String(error) });
@@ -107,6 +124,14 @@ router.post('/setup-password', async (req, res) => {
     `, [hashPassword(req.body.password), now, user.id]);
     await client.query('DELETE FROM "UserInvitation" WHERE "userId" = $1', [user.id]);
     await client.query('COMMIT');
+    await recordActivity({
+      userId: updated.id,
+      action: 'update',
+      entity: 'user',
+      entityId: updated.id,
+      details: `Password setup completed for ${updated.email}`,
+      ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
+    });
     return res.json({ data: { token: createSessionToken(updated), user: publicUser(updated) } });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});

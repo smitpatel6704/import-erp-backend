@@ -23,6 +23,7 @@ import usersRouter from './routes/users.js';
 import shipmentItemsRouter from './routes/shipment-items.js';
 import authRouter from './routes/auth.js';
 import cronRouter from './routes/cron.js';
+import { auditMutation } from './services/audit.js';
 import { authenticate, requireAdmin, requireModulePermission } from './services/auth.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,26 +37,32 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/cron', cronRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/dashboard', authenticate, requireModulePermission('dashboard'), dashboardRouter);
-app.use('/api/shipments', authenticate, requireModulePermission('shipments'), shipmentsRouter);
-app.use('/api/containers', authenticate, requireModulePermission('containers'), containersRouter);
-app.use('/api/companies', authenticate, requireModulePermission('companies'), companiesRouter);
-app.use('/api/exporter-companies', authenticate, requireModulePermission('companies'), exporterCompaniesRouter);
-app.use('/api/products', authenticate, requireModulePermission('companies'), productsRouter);
-app.use('/api/documents', authenticate, requireModulePermission('documents'), documentsRouter);
-app.use('/api/shipment-documents', authenticate, requireModulePermission('documents'), shipmentDocumentsRouter);
-app.use('/api/shipment-items', authenticate, requireModulePermission('shipments'), shipmentItemsRouter);
-app.use('/api/logistics', authenticate, requireModulePermission('logistics'), logisticsRouter);
+app.use('/api/shipments', authenticate, requireModulePermission('shipments'), auditMutation('shipment'), shipmentsRouter);
+app.use('/api/containers', authenticate, requireModulePermission('containers'), auditMutation('container'), containersRouter);
+app.use('/api/companies', authenticate, requireModulePermission('companies'), auditMutation('company'), companiesRouter);
+app.use('/api/exporter-companies', authenticate, requireModulePermission('companies'), auditMutation('exporter_company'), exporterCompaniesRouter);
+app.use('/api/products', authenticate, requireModulePermission('companies'), auditMutation('product'), productsRouter);
+app.use('/api/documents', authenticate, requireModulePermission('documents'), auditMutation('document'), documentsRouter);
+app.use('/api/shipment-documents', authenticate, requireModulePermission('documents'), auditMutation((req) => {
+    if (req.path.startsWith('/checklist-types'))
+        return 'document_checklist';
+    if (req.path.includes('/merge'))
+        return 'document_bundle';
+    return 'shipment_document';
+}), shipmentDocumentsRouter);
+app.use('/api/shipment-items', authenticate, requireModulePermission('shipments'), auditMutation('shipment_item'), shipmentItemsRouter);
+app.use('/api/logistics', authenticate, requireModulePermission('logistics'), auditMutation('logistics'), logisticsRouter);
 app.use('/api/notifications', authenticate, requireModulePermission('notifications'), notificationsRouter);
 app.use('/api/reports', authenticate, requireModulePermission('reports'), reportsRouter);
-app.use('/api/expenses', authenticate, requireModulePermission('reports'), expensesRouter);
-app.use('/api/invoices', authenticate, requireModulePermission('reports'), invoicesRouter);
+app.use('/api/expenses', authenticate, requireModulePermission('reports'), auditMutation('expense'), expensesRouter);
+app.use('/api/invoices', authenticate, requireModulePermission('reports'), auditMutation('invoice'), invoicesRouter);
 app.use('/api/activities', authenticate, requireAdmin, activitiesRouter);
-app.use('/api/settings/users', authenticate, requireAdmin, usersRouter);
+app.use('/api/settings/users', authenticate, requireAdmin, auditMutation((req) => req.path.includes('resend-invitation') ? 'user_invitation' : 'user'), usersRouter);
 app.use('/api/settings', authenticate, (req, res, next) => {
     if (req.method === 'GET' && req.path === '/options')
         return next();
     return requireAdmin(req, res, next);
-}, settingsRouter);
+}, auditMutation('setting_option'), settingsRouter);
 app.use((error, _req, res, _next) => {
     console.error(error);
     if (res.headersSent)
