@@ -28,14 +28,6 @@ import { authenticate, requireAdmin, requireModulePermission } from './services/
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
-const configuredOrigins = [
-    process.env.FRONTEND_URL,
-    process.env.APP_URL,
-    ...(process.env.CORS_ORIGINS || '').split(','),
-]
-    .filter(Boolean)
-    .map((origin) => origin.replace(/\/$/, ''));
-const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL;
 
 app.disable('x-powered-by');
 app.use((_req, res, next) => {
@@ -45,18 +37,7 @@ app.use((_req, res, next) => {
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     next();
 });
-app.use(cors({
-    origin(origin, callback) {
-        if (!origin)
-            return callback(null, true);
-        const normalizedOrigin = origin.replace(/\/$/, '');
-        if (configuredOrigins.includes(normalizedOrigin) || !isProduction)
-            return callback(null, true);
-        const error = new Error('Not allowed by CORS');
-        error.status = 403;
-        return callback(error);
-    },
-}));
+app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 app.get('/api/health', (_req, res) => {
