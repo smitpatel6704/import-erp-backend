@@ -2,7 +2,13 @@ import { createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from 
 import { db } from '../db.js';
 
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
-const secret = () => process.env.AUTH_SECRET || process.env.CRON_SECRET || 'nexport-local-development-secret';
+const isProduction = () => process.env.NODE_ENV === 'production' || process.env.VERCEL;
+const secret = () => {
+  const value = process.env.AUTH_SECRET || (!isProduction() ? process.env.CRON_SECRET : '');
+  if (value && value !== 'replace-with-a-long-random-secret') return value;
+  if (isProduction()) throw new Error('AUTH_SECRET must be configured in production');
+  return 'nexport-local-development-secret';
+};
 
 const encode = (value) => Buffer.from(value).toString('base64url');
 const sign = (value) => createHmac('sha256', secret()).update(value).digest('base64url');

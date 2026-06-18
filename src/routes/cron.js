@@ -7,7 +7,7 @@ const router = Router();
 const runDailyJobs = async (req, res) => {
     try {
         const cronSecret = process.env.CRON_SECRET;
-        if (process.env.VERCEL && !cronSecret) {
+        if ((process.env.NODE_ENV === 'production' || process.env.VERCEL) && !cronSecret) {
             return res.status(503).json({ error: 'CRON_SECRET is not configured' });
         }
         if (cronSecret &&

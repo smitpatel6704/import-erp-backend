@@ -4,6 +4,7 @@ import { createId } from '@paralleldrive/cuid2';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { randomBytes } from 'crypto';
 import { PDFDocument } from 'pdf-lib';
 import { createNotification, notificationRecipients } from '../services/notifications.js';
 const router = Router();
@@ -17,14 +18,29 @@ const storage = multer.diskStorage({
         cb(null, uploadDir);
     },
     filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+        cb(null, `${file.fieldname}-${Date.now()}-${randomBytes(8).toString('hex')}${path.extname(file.originalname).toLowerCase()}`);
     }
 });
+const allowedUploadTypes = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp']);
 const upload = multer({
     storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+        if (allowedUploadTypes.has(file.mimetype))
+            return cb(null, true);
+        return cb(new Error('Only PDF and image uploads are allowed'));
+    },
 });
+const uploadDocumentFile = (req, res, next) => {
+    upload.single('file')(req, res, (error) => {
+        if (!error)
+            return next();
+        const message = error.code === 'LIMIT_FILE_SIZE'
+            ? 'File must be 5MB or smaller'
+            : error.message || 'Invalid upload';
+        return res.status(400).json({ error: message });
+    });
+};
 router.get('/pending', async (req, res) => {
     try {
         const shipmentId = req.query.shipmentId || '';
@@ -200,7 +216,7 @@ router.get('/shipment/:id/checklist', async (req, res) => {
         return res.status(500).json({ error: 'Failed to fetch shipment checklist' });
     }
 });
-router.post('/shipment/:id/upload', upload.single('file'), async (req, res) => {
+router.post('/shipment/:id/upload', uploadDocumentFile, async (req, res) => {
     try {
         const { id: shipmentId } = req.params;
         const { checklistId, expiryDate, remarks } = req.body;

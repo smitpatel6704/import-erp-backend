@@ -17,6 +17,25 @@ import { recordActivity } from '../services/audit.js';
 import { sendEmail } from '../services/email.js';
 
 const router = Router();
+const authAttempts = new Map();
+const rateLimitAuth = (name, identifierForRequest) => (req, res, next) => {
+  const windowMs = 15 * 60 * 1000;
+  const maxAttempts = 8;
+  const now = Date.now();
+  const identifier = identifierForRequest(req);
+  const key = `${name}:${req.ip || req.headers['x-forwarded-for'] || 'unknown'}:${identifier}`;
+  const current = authAttempts.get(key);
+  if (!current || current.resetAt <= now) {
+    authAttempts.set(key, { count: 1, resetAt: now + windowMs });
+    return next();
+  }
+  current.count += 1;
+  if (current.count > maxAttempts) {
+    res.setHeader('Retry-After', String(Math.ceil((current.resetAt - now) / 1000)));
+    return res.status(429).json({ error: 'Too many attempts. Please try again later.' });
+  }
+  return next();
+};
 
 const publicUser = (user) => ({
   id: user.id,
@@ -84,7 +103,7 @@ router.post('/bootstrap', async (req, res) => {
   }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', rateLimitAuth('login', (req) => String(req.body.email || '').trim().toLowerCase()), async (req, res) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
     const [user] = await db.query('SELECT * FROM User WHERE email = ?', [email]);
@@ -114,7 +133,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
-router.post('/verify-email-otp', async (req, res) => {
+router.post('/verify-email-otp', rateLimitAuth('otp', (req) => String(req.body.otpToken || '').slice(0, 32)), async (req, res) => {
   try {
     const pending = verifyPendingOtpToken(String(req.body.otpToken || ''));
     const code = String(req.body.code || '').trim();
