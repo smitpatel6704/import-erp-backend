@@ -22,6 +22,7 @@ async function run() {
       { id: '1', category: 'shipping_line', value: 'Maersk', label: 'Maersk' },
       { id: '2', category: 'shipping_line', value: 'MSC', label: 'MSC' },
       { id: '3', category: 'shipping_line', value: 'CMA CGM', label: 'CMA CGM' },
+      { id: 'evergreen', category: 'shipping_line', value: 'Evergreen', label: 'Evergreen' },
       { id: '4', category: 'container_size', value: '20FT', label: '20FT' },
       { id: '5', category: 'container_size', value: '40FT', label: '40FT' },
       { id: '6', category: 'container_size', value: '45FT', label: '45FT' },

@@ -32,3 +32,17 @@ screen can verify the SMTP connection and send or retry individual emails.
 - `POST /api/notifications/email/test` - verify the Gmail SMTP connection
 - `GET /api/reports/export.xlsx` and `GET /api/reports/export.pdf`
 - `GET|POST|PUT|DELETE /api/settings/users` - user and role administration
+- `GET /api/maersk/status` - Maersk API configuration status without exposing credentials
+- `GET /api/maersk/vessels` - official Maersk active-vessel reference data
+- `GET /api/maersk/locations` - official Maersk ports, terminals, cities, and location reference data
+- Evergreen ShipmentLink container/B/L tracking is supported through `POST /api/shipments/tracking/lookup`
+
+## Maersk API
+
+Set `MAERSK_CONSUMER_KEY` for the Vessels and Locations APIs. Shipment tracking
+also requires `MAERSK_CONSUMER_SECRET` and approval for the **Ocean Track &
+Trace** product in the Maersk Developer Portal. The backend obtains and caches
+the OAuth client-credentials token automatically.
+
+Do not expose either credential in the frontend or commit them to source
+control. The optional browser-scraping fallback is disabled by default.

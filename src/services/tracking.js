@@ -2,6 +2,12 @@ import { createId } from '@paralleldrive/cuid2';
 import { chromium as playwrightChromium } from 'playwright-core';
 import { db } from '../db.js';
 import { createNotification, notificationRecipients } from './notifications.js';
+import {
+    fetchMaerskTrackingEvents,
+    maerskConfigurationStatus,
+    MaerskApiError,
+} from './maersk.js';
+import { evergreenTrackingUrl, fetchEvergreenTracking } from './evergreen.js';
 const TRACKING_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MSC_TRACKING_PAGE = 'https://www.msc.com/en/track-a-shipment';
 const MSC_TRACKING_API = 'https://www.msc.com/api/feature/tools/TrackingInfo';
@@ -23,6 +29,8 @@ export const trackingCarrierLabel = (shippingLine) => {
         return 'Maersk';
     if (line.includes('msc') || line.includes('mediterraneanshipping'))
         return 'MSC';
+    if (line.includes('evergreen') || line.includes('shipmentlink'))
+        return 'Evergreen';
     return null;
 };
 const normalizeTrackingReference = (value) => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -66,6 +74,8 @@ export const trackingUrlForShipment = (shipment) => {
         return `https://www.maersk.com/tracking/${encodedTrackingReference}`;
     if (carrier === 'MSC')
         return `https://www.msc.com/track-a-shipment?trackingNumber=${encodedTrackingReference}`;
+    if (carrier === 'Evergreen')
+        return evergreenTrackingUrl();
     return null;
 };
 const statusLabel = (status) => status
@@ -90,6 +100,8 @@ const shipmentStatusFromCarrier = (result) => {
     const value = `${result?.status || ''} ${result?.lastEvent || ''}`.toLowerCase();
     if (/delivered|empty received/.test(value))
         return 'delivered';
+    if (/transship/.test(value))
+        return 'in_transit';
     if (/arrived|arrival|discharg|import to consignee/.test(value))
         return 'at_pod';
     if (/in transit/.test(value))
@@ -116,6 +128,7 @@ const localChromeExecutablePath = () => process.env.CHROME_EXECUTABLE_PATH ||
 const isServerless = () => Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const deploymentRuntimeLabel = () => process.env.VERCEL ? 'Vercel serverless' : process.env.AWS_LAMBDA_FUNCTION_NAME ? 'AWS Lambda' : 'local server';
 const maerskScraperEnabled = () => !isServerless() || process.env.ENABLE_MAERSK_SCRAPER_ON_VERCEL === 'true';
+const maerskScraperFallbackEnabled = () => process.env.MAERSK_SCRAPER_FALLBACK === 'true' && maerskScraperEnabled();
 const maerskScraperHeadless = () => isServerless() || process.env.MAERSK_SCRAPER_HEADLESS !== 'false';
 const MAERSK_SCRAPER_TIMEOUT_MS = 25000;
 export const maerskScraperMode = () => (maerskScraperHeadless() ? 'headless' : 'visible');
@@ -192,6 +205,79 @@ const eventLabel = (activity) => {
     return map[activity || ''] || activity?.replace(/-/g, ' ').toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase()) || 'Event';
 };
 const eventLocation = (location) => [location?.city, location?.country].filter(Boolean).join(', ') || location?.terminal || null;
+const dcsaEventLocation = (event) => {
+    const transportCall = event?.transportCall || {};
+    const location = event?.eventLocation || transportCall.location || {};
+    return location.locationName ||
+        location.UNLocationCode ||
+        transportCall.otherFacility ||
+        transportCall.UNLocationCode ||
+        null;
+};
+const dcsaEventCode = (event) => event?.equipmentEventTypeCode ||
+    event?.transportEventTypeCode ||
+    event?.shipmentEventTypeCode ||
+    'EVENT';
+const dcsaEventLabel = (event) => {
+    const code = dcsaEventCode(event);
+    const labels = {
+        ARRI: 'Arrived',
+        DEPA: 'Departed',
+        LOAD: 'Loaded',
+        DISC: 'Discharged',
+        GTIN: 'Gate in',
+        GTOT: 'Gate out',
+        STUF: 'Stuffed',
+        STRP: 'Stripped',
+        PICK: 'Picked up',
+        DROP: 'Dropped off',
+        RSEA: 'Resealed',
+        RMVD: 'Removed',
+        INSP: 'Inspected',
+        RECE: 'Received',
+        DRFT: 'Drafted',
+        APPR: 'Approved',
+        ISSU: 'Issued',
+        CONF: 'Confirmed',
+        CMPL: 'Completed',
+        RELS: 'Released',
+    };
+    return labels[code] || code.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase());
+};
+const dcsaEventDate = (event) => {
+    const date = new Date(event?.eventDateTime || event?.eventCreatedDateTime || '');
+    return Number.isNaN(date.getTime()) ? null : date;
+};
+const dcsaTrackingQueriesForShipment = (shipment) => {
+    const candidates = [];
+    const add = (name, value) => {
+        const normalized = normalizeTrackingReference(value);
+        if (!normalized)
+            return;
+        if (name === 'equipmentReference' && !isContainerNumber(normalized))
+            return;
+        if (name !== 'equipmentReference' && !isMaerskDocumentNumber(normalized))
+            return;
+        const key = `${name}:${normalized}`;
+        if (!candidates.some((candidate) => candidate.key === key))
+            candidates.push({ key, query: { [name]: normalized }, reference: normalized });
+    };
+
+    add(isContainerNumber(normalizeTrackingReference(shipment.trackingNumber))
+        ? 'equipmentReference'
+        : 'transportDocumentReference', shipment.trackingNumber);
+    if (isMaerskDocumentNumber(normalizeTrackingReference(shipment.trackingNumber)))
+        add('carrierBookingReference', shipment.trackingNumber);
+    add('transportDocumentReference', shipment.blNumber);
+    add('carrierBookingReference', shipment.bookingNumber);
+    for (const containerNumber of [
+        ...(shipment.containerNumbers || []),
+        shipment.containerNumber,
+    ]) {
+        add('equipmentReference', containerNumber);
+    }
+    return candidates;
+};
 const getSetCookieHeaders = (headers) => {
     const anyHeaders = headers;
     if (typeof anyHeaders.getSetCookie === 'function')
@@ -303,6 +389,127 @@ function parseMaerskApiTracking(data, url) {
         error: null,
         url,
     };
+}
+export function parseMaerskDcsaTracking(data, url, reference = '') {
+    const events = (Array.isArray(data) ? data : data?.events || [])
+        .map((event) => ({ ...event, parsedDate: dcsaEventDate(event) }))
+        .filter((event) => event.parsedDate)
+        .sort((a, b) => a.parsedDate.getTime() - b.parsedDate.getTime());
+    if (!events.length) {
+        return {
+            status: 'No results found',
+            location: null,
+            eta: null,
+            etd: null,
+            origin: null,
+            originCountry: null,
+            destination: null,
+            vesselName: null,
+            voyageNumber: null,
+            containers: [],
+            lastEvent: 'Maersk Ocean Track & Trace returned no shipment events.',
+            rawDetails: reference ? `Reference: ${reference}` : null,
+            error: 'No Maersk tracking events found',
+            url,
+        };
+    }
+
+    const actualEvents = events.filter((event) => event.eventClassifierCode === 'ACT');
+    const latestEvent = actualEvents[actualEvents.length - 1] || events[events.length - 1];
+    const arrivalEvents = events.filter((event) =>
+        event.transportEventTypeCode === 'ARRI' ||
+        event.equipmentEventTypeCode === 'DISC');
+    const departureEvents = events.filter((event) =>
+        event.transportEventTypeCode === 'DEPA' ||
+        event.equipmentEventTypeCode === 'LOAD');
+    const estimatedArrival = [...arrivalEvents].reverse().find((event) =>
+        ['EST', 'PLN'].includes(event.eventClassifierCode) &&
+        event.parsedDate.getTime() >= Date.now() - (24 * 60 * 60 * 1000));
+    const firstLocation = events.map(dcsaEventLocation).find(Boolean) || null;
+    const lastLocation = [...events].reverse().map(dcsaEventLocation).find(Boolean) || null;
+    const vesselEvent = [...events].reverse().find((event) => event?.transportCall?.vessel?.vesselName);
+    const transportCall = vesselEvent?.transportCall || {};
+    const latestLocation = dcsaEventLocation(latestEvent);
+    const latestLabel = dcsaEventLabel(latestEvent);
+    const classifier = latestEvent.eventClassifierCode === 'ACT'
+        ? ''
+        : latestEvent.eventClassifierCode === 'EST'
+            ? ' (estimated)'
+            : latestEvent.eventClassifierCode === 'PLN'
+                ? ' (planned)'
+                : '';
+    const lastEvent = `${latestLabel}${classifier}${latestLocation ? ` • ${latestLocation}` : ''} • ${formatDate(latestEvent.parsedDate)}`;
+    const containers = [...new Map(events
+        .filter((event) => event.equipmentReference)
+        .map((event) => [event.equipmentReference, {
+            containerNumber: event.equipmentReference,
+            containerSize: '',
+            containerType: event.ISOEquipmentCode || '',
+        }])).values()];
+    const timeline = events.map((event) => {
+        const vessel = event?.transportCall?.vessel?.vesselName;
+        const voyage = event?.transportCall?.exportVoyageNumber ||
+            event?.transportCall?.importVoyageNumber ||
+            event?.transportCall?.carrierVoyageNumber;
+        return [
+            dcsaEventLocation(event) || 'Unknown location',
+            `${dcsaEventLabel(event)}${event.eventClassifierCode ? ` (${event.eventClassifierCode})` : ''}`,
+            vessel ? `${vessel}${voyage ? ` / ${voyage}` : ''}` : null,
+            formatDate(event.parsedDate),
+        ].filter(Boolean).join(' - ');
+    });
+
+    return {
+        status: latestLabel,
+        location: latestLocation,
+        eta: estimatedArrival?.parsedDate || null,
+        etd: departureEvents[0]?.parsedDate || null,
+        origin: firstLocation,
+        originCountry: null,
+        destination: lastLocation,
+        vesselName: transportCall?.vessel?.vesselName || null,
+        voyageNumber: transportCall.exportVoyageNumber ||
+            transportCall.importVoyageNumber ||
+            transportCall.carrierVoyageNumber ||
+            null,
+        containers,
+        lastEvent,
+        rawDetails: [
+            `Reference: ${reference || '-'}`,
+            `Events: ${events.length}`,
+            `Latest event: ${lastEvent}`,
+            estimatedArrival ? `Estimated arrival: ${formatDate(estimatedArrival.parsedDate)}` : null,
+            '',
+            'Timeline:',
+            ...timeline,
+        ].filter((line) => line !== null).join('\n').slice(0, 12000),
+        error: null,
+        url,
+    };
+}
+export async function fetchMaerskTracking(shipment, url) {
+    const queries = dcsaTrackingQueriesForShipment(shipment);
+    let lastResult = null;
+    let lastError = null;
+    for (const candidate of queries) {
+        try {
+            const response = await fetchMaerskTrackingEvents(candidate.query);
+            const result = parseMaerskDcsaTracking(response.data, url, candidate.reference);
+            if (!result.error)
+                return result;
+            lastResult = result;
+        }
+        catch (error) {
+            lastError = error;
+            if (error instanceof MaerskApiError && ![404].includes(error.status))
+                throw error;
+        }
+    }
+    if (lastResult)
+        return lastResult;
+    if (lastError)
+        throw lastError;
+    return parseMaerskDcsaTracking([], url);
 }
 function parseMaerskRenderedText(rawText, url) {
     const status = inferStatusFromTrackingText(rawText);
@@ -571,14 +778,36 @@ export async function fetchCarrierTracking(shipment) {
         };
     }
     if (carrier === 'Maersk' && url) {
-        if (!maerskScraperEnabled()) {
+        const configuration = maerskConfigurationStatus();
+        if (configuration.trackAndTraceConfigured) {
+            try {
+                return await fetchMaerskTracking(shipment, url);
+            }
+            catch (error) {
+                const message = String(error?.message || error);
+                if (!maerskScraperFallbackEnabled()) {
+                    return {
+                        status: statusLabel(shipment.status),
+                        location: shipment.destinationPort,
+                        eta: shipment.eta ? new Date(shipment.eta) : null,
+                        lastEvent: message,
+                        rawDetails: error?.details ? JSON.stringify(error.details).slice(0, 12000) : message,
+                        error: 'Maersk Ocean Track & Trace API failed',
+                        url,
+                    };
+                }
+            }
+        }
+        if (!maerskScraperFallbackEnabled()) {
             return {
                 status: statusLabel(shipment.status),
                 location: shipment.destinationPort,
                 eta: shipment.eta ? new Date(shipment.eta) : null,
-                lastEvent: 'Maersk public tracking scraping is disabled on Vercel serverless. Use manual entry or configure an official Maersk tracking API integration.',
+                lastEvent: configuration.referenceDataConfigured
+                    ? 'The Maersk key is configured for reference data, but Ocean Track & Trace requires product approval and MAERSK_CONSUMER_SECRET.'
+                    : 'Maersk API credentials are not configured.',
                 rawDetails: `Reference: ${trackingReference}\nURL: ${url}\nRuntime: ${deploymentRuntimeLabel()}`,
-                error: 'Maersk public tracking is not available on Vercel serverless',
+                error: 'Maersk Ocean Track & Trace is not configured',
                 url,
             };
         }
@@ -591,11 +820,9 @@ export async function fetchCarrierTracking(shipment) {
                 status: statusLabel(shipment.status),
                 location: shipment.destinationPort,
                 eta: shipment.eta ? new Date(shipment.eta) : null,
-                lastEvent: `Maersk tracking page scrape failed on ${deploymentRuntimeLabel()}: ${message}`,
+                lastEvent: `Maersk tracking fallback failed on ${deploymentRuntimeLabel()}: ${message}`,
                 rawDetails: error?.stack || message,
-                error: isServerless()
-                    ? 'Maersk tracking is blocked or timed out in the Vercel serverless runtime'
-                    : 'Maersk tracking page scrape failed',
+                error: 'Maersk tracking API and scraper fallback failed',
                 url,
             };
         }
@@ -612,6 +839,23 @@ export async function fetchCarrierTracking(shipment) {
                 lastEvent: `MSC tracking API failed: ${String(error)}`,
                 rawDetails: null,
                 error: 'MSC tracking API failed',
+                url,
+            };
+        }
+    }
+    if (carrier === 'Evergreen' && url) {
+        try {
+            return await fetchEvergreenTracking(trackingReference);
+        }
+        catch (error) {
+            const message = String(error?.message || error);
+            return {
+                status: statusLabel(shipment.status),
+                location: shipment.destinationPort,
+                eta: shipment.eta ? new Date(shipment.eta) : null,
+                lastEvent: `Evergreen tracking failed: ${message}`,
+                rawDetails: error?.stack || message,
+                error: 'Evergreen tracking failed',
                 url,
             };
         }
@@ -736,6 +980,11 @@ export async function syncDueShipmentTrackings(carrier = null) {
                 shippingLine LIKE '%maersk%'
                 OR shippingLine LIKE '%mersk%'
               )`
+        : carrier === 'Evergreen'
+            ? `AND (
+                shippingLine LIKE '%evergreen%'
+                OR shippingLine LIKE '%shipmentlink%'
+              )`
         : '';
     const dueShipments = await db.query(`SELECT *
      FROM Shipment
@@ -759,6 +1008,8 @@ export async function syncDueShipmentTrackings(carrier = null) {
          OR shippingLine LIKE '%mersk%'
          OR shippingLine LIKE '%msc%'
          OR shippingLine LIKE '%mediterranean shipping%'
+         OR shippingLine LIKE '%evergreen%'
+         OR shippingLine LIKE '%shipmentlink%'
        )
        AND status NOT IN ('delivered', 'closed')
        ${carrierFilter}

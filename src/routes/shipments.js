@@ -32,7 +32,7 @@ router.post('/tracking/lookup', async (req, res) => {
         if (!trackingNumber || !shippingLine)
             return res.status(400).json({ error: 'Tracking number and shipping line are required' });
         if (!trackingCarrierLabel(shippingLine))
-            return res.status(400).json({ error: 'Only Maersk and MSC tracking are supported' });
+            return res.status(400).json({ error: 'Only Maersk, MSC, and Evergreen tracking are supported' });
         const result = await fetchCarrierTracking({
             id: 'lookup',
             trackingNumber,

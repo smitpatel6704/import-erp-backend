@@ -64,6 +64,12 @@ const statements = [
     "createdAt" TIMESTAMP NOT NULL DEFAULT NOW()
   )`,
   `CREATE INDEX IF NOT EXISTS "DocumentBundle_shipmentId_idx" ON "DocumentBundle" ("shipmentId")`,
+  `INSERT INTO "SettingOption" ("id", "category", "value", "label", "isActive")
+    SELECT 'default-shipping-line-evergreen', 'shipping_line', 'Evergreen', 'Evergreen', TRUE
+    WHERE NOT EXISTS (
+      SELECT 1 FROM "SettingOption"
+      WHERE "category" = 'shipping_line' AND LOWER("value") = 'evergreen'
+    )`,
 ];
 
 export async function ensureFeatureSchema() {
