@@ -5,7 +5,12 @@ import { createInvitationToken, hashPassword, normalizePermissions } from '../se
 import { isEmailConfigured, sendEmail } from '../services/email.js';
 
 const router = Router();
-const appUrl = () => (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+const appUrl = () => {
+  const value = process.env.APP_URL || process.env.FRONTEND_URL;
+  if (!value)
+    throw new Error('APP_URL or FRONTEND_URL must be configured to create invitation links');
+  return value.replace(/\/$/, '');
+};
 
 const sendInvitation = async (user, token) => {
   const inviteUrl = `${appUrl()}/setup-password?token=${encodeURIComponent(token)}`;
