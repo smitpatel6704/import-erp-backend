@@ -4,7 +4,6 @@ import { db } from '../db.js';
 import { createNotification, notificationRecipients } from './notifications.js';
 import {
     fetchMaerskTrackingEvents,
-    maerskConfigurationStatus,
     MaerskApiError,
 } from './maersk.js';
 import { evergreenTrackingUrl, fetchEvergreenTracking } from './evergreen.js';
@@ -12,6 +11,7 @@ const TRACKING_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MSC_TRACKING_PAGE = 'https://www.msc.com/en/track-a-shipment';
 const MSC_TRACKING_API = 'https://www.msc.com/api/feature/tools/TrackingInfo';
 const MSC_USER_AGENT = 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36';
+const MAERSK_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
 const trackingColumns = [
     ['carrierTrackingStatus', 'VARCHAR(255) NULL'],
     ['carrierTrackingLocation', 'VARCHAR(255) NULL'],
@@ -131,10 +131,7 @@ const localChromeExecutablePath = () => process.env.CHROME_EXECUTABLE_PATH ||
         : undefined);
 const isServerless = () => Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const deploymentRuntimeLabel = () => process.env.VERCEL ? 'Vercel serverless' : process.env.AWS_LAMBDA_FUNCTION_NAME ? 'AWS Lambda' : 'local server';
-const maerskScraperEnabled = () => !isServerless() || process.env.ENABLE_MAERSK_SCRAPER_ON_VERCEL === 'true';
-const maerskScraperFallbackEnabled = () => process.env.MAERSK_SCRAPER_FALLBACK === 'true' && maerskScraperEnabled();
-const maerskScraperHeadless = () => isServerless() || process.env.MAERSK_SCRAPER_HEADLESS !== 'false';
-const MAERSK_SCRAPER_TIMEOUT_MS = 25000;
+const maerskScraperHeadless = () => isServerless() || process.env.MAERSK_SCRAPER_HEADLESS === 'true';
 export const maerskScraperMode = () => (maerskScraperHeadless() ? 'headless' : 'visible');
 const maerskBrowserOptions = async () => {
     if (isServerless() || process.platform === 'linux') {
@@ -182,11 +179,37 @@ const inferStatusFromTrackingText = (text) => {
         return 'Discharged';
     return 'Tracking details available';
 };
+const cleanMaerskValue = (value = '') => String(value).replace(/\s+/g, ' ').trim();
+const maerskDateFromText = (dateText = '') => {
+    const date = new Date(cleanMaerskValue(dateText));
+    return Number.isNaN(date.getTime()) ? null : date;
+};
+const maerskContainerDetails = (rawContainerType = '') => {
+    let containerSize = '';
+    let containerType = cleanMaerskValue(rawContainerType);
+    if (/40/i.test(rawContainerType))
+        containerSize = '40FT';
+    else if (/20/i.test(rawContainerType))
+        containerSize = '20FT';
+    else if (/45/i.test(rawContainerType))
+        containerSize = '45FT';
+    if (/dry/i.test(rawContainerType))
+        containerType = 'Dry Container';
+    else if (/reefer/i.test(rawContainerType))
+        containerType = 'Reefer Container';
+    else if (/open/i.test(rawContainerType))
+        containerType = 'Open Top Container';
+    else if (/flat/i.test(rawContainerType))
+        containerType = 'Flat Rack Container';
+    return { containerSize, containerType };
+};
 const isMaerskTrackingLandingText = (text) => {
     const normalized = text.toLowerCase();
     return normalized.includes('shipment & container tracking') &&
         normalized.includes('select your booking type') &&
         normalized.includes('container number is made of 4 letters and 7 digits') &&
+        !/[a-z]{4}\d{7}\s*\|/.test(normalized) &&
+        !/\bfrom\s+[a-z]/.test(normalized) &&
         !normalized.includes('latest event') &&
         !normalized.includes('estimated arrival date') &&
         !normalized.includes('no results found') &&
@@ -525,45 +548,115 @@ export async function fetchMaerskTracking(shipment, url) {
         throw lastError;
     return parseMaerskDcsaTracking([], url);
 }
-function parseMaerskRenderedText(rawText, url) {
-    const status = inferStatusFromTrackingText(rawText);
+function parseMaerskRenderedText(rawText, url, reference = '') {
+    const text = cleanText(rawText);
+    const status = inferStatusFromTrackingText(text);
     const hasNoResults = status === 'No results found';
-    const hasOnlyLandingText = isMaerskTrackingLandingText(rawText);
-    const lines = rawText.split('\n');
-    const containerLine = lines.find((line) => /^[A-Z]{4}\d{7}/.test(line));
-    const latestEventIndex = lines.findIndex((line) => line.toLowerCase().includes('latest event'));
-    const latestEvent = latestEventIndex >= 0
-        ? [lines[latestEventIndex + 1], lines[latestEventIndex + 2]].filter(Boolean).join(' • ')
-        : null;
-    const arrivedLine = lines.find((line) => /^Arrived at /i.test(line));
-    const lastEvent = hasNoResults
-        ? lines.slice(lines.findIndex((line) => line.toLowerCase().includes('no results found')), 4).join(' ')
-        : latestEvent || arrivedLine || lines.find((line) => /arrival|departure|loaded|discharged|gate|delivered|transit/i.test(line)) || status;
+    const hasOnlyLandingText = isMaerskTrackingLandingText(text);
+    const getMatch = (regex) => cleanMaerskValue(text.match(regex)?.[1] || '');
+    if (hasNoResults && !text.includes('Bill of Lading number')) {
+        return {
+            status: 'No results found',
+            location: null,
+            eta: null,
+            etd: null,
+            origin: null,
+            originCountry: null,
+            destination: null,
+            vesselName: null,
+            voyageNumber: null,
+            containers: [],
+            lastEvent: 'No results found on Maersk public tracking.',
+            rawDetails: text.slice(0, 12000),
+            error: 'No public Maersk tracking result found',
+            url,
+        };
+    }
+    if (hasOnlyLandingText) {
+        return {
+            status: 'Tracking form did not return details',
+            location: null,
+            eta: null,
+            etd: null,
+            origin: null,
+            originCountry: null,
+            destination: null,
+            vesselName: null,
+            voyageNumber: null,
+            containers: [],
+            lastEvent: 'Maersk showed the tracking form but no shipment result.',
+            rawDetails: text.slice(0, 12000),
+            error: 'Maersk tracking form did not return shipment details',
+            url,
+        };
+    }
+
+    const billOfLading = getMatch(/Bill of Lading number\s+([A-Z0-9]+)/i);
+    const origin = getMatch(/Bill of Lading number\s+[A-Z0-9]+\s+From\s+([^\n]+?)\s+To/i);
+    const destination = getMatch(/To\s+([^\n]+?)\s+(?:[A-Z]{4}\d{7}|Last updated|Estimated arrival date)/i);
+    const containerNumber = getMatch(/([A-Z]{4}\d{7})\s*\|/i);
+    const rawContainerType = getMatch(/[A-Z]{4}\d{7}\s*\|\s*([^\n]+)/i);
+    const vesselEventRegex = /(Vessel arrival|Vessel departure|Feeder arrival|Feeder departure|Load on|Discharge)\s+\(([^)]+)\)\s+([0-9]{2}\s+[A-Za-z]{3}\s+[0-9]{4}\s+[0-9]{2}:[0-9]{2})/gi;
+    const events = [...text.matchAll(vesselEventRegex)].map((match) => ({
+        event: cleanMaerskValue(match[1]),
+        vessel: cleanMaerskValue(match[2]),
+        dateText: cleanMaerskValue(match[3]),
+    }));
+    const arrivals = events.filter((event) => /arrival/i.test(event.event));
+    const departures = events.filter((event) => /departure/i.test(event.event));
+    const finalArrival = arrivals[arrivals.length - 1];
+    const firstDeparture = departures[0];
+    const latestDeparture = departures[departures.length - 1];
+    const etaText = getMatch(/Estimated arrival date\s+([\s\S]*?)\s+Latest event/i) || finalArrival?.dateText || '';
+    const etdText = firstDeparture?.dateText || '';
+    const vesselName = latestDeparture?.vessel?.split('/')[0]?.trim() ||
+        finalArrival?.vessel?.split('/')[0]?.trim() ||
+        firstDeparture?.vessel?.split('/')[0]?.trim() ||
+        null;
+    const voyageNumber = latestDeparture?.vessel?.split('/')[1]?.trim() ||
+        finalArrival?.vessel?.split('/')[1]?.trim() ||
+        firstDeparture?.vessel?.split('/')[1]?.trim() ||
+        null;
+    const latestEvent = getMatch(/Latest event\s+([\s\S]*?)\s+Note:/i) ||
+        (latestDeparture ? `${latestDeparture.event} • ${latestDeparture.vessel} • ${latestDeparture.dateText}` : '');
+    const { containerSize, containerType } = maerskContainerDetails(rawContainerType);
+    const eta = maerskDateFromText(etaText);
+    const etd = maerskDateFromText(etdText);
+    const timeline = events.map((event) => [
+        event.event,
+        event.vessel,
+        event.dateText,
+    ].filter(Boolean).join(' - '));
+    const hasShipmentData = Boolean(billOfLading || origin || destination || containerNumber || etaText || latestEvent || events.length);
     return {
-        status: hasOnlyLandingText ? 'Tracking form did not return details' : arrivedLine || status,
-        location: arrivedLine?.replace(/^Arrived at /i, '') || null,
-        eta: null,
-        etd: null,
-        origin: null,
+        status: latestEvent || status,
+        location: destination || null,
+        eta,
+        etd,
+        origin: origin || null,
         originCountry: null,
-        destination: arrivedLine?.replace(/^Arrived at /i, '') || null,
-        vesselName: null,
-        voyageNumber: null,
-        containers: containerLine ? [{
-            containerNumber: containerLine.match(/^[A-Z]{4}\d{7}/)?.[0] || '',
-            containerSize: '',
-            containerType: '',
-        }] : [],
-        lastEvent: hasOnlyLandingText ? 'Maersk showed the tracking form but no shipment result.' : lastEvent || status,
+        destination: destination || null,
+        vesselName,
+        voyageNumber,
+        containers: containerNumber
+            ? [{ containerNumber, containerSize, containerType }]
+            : [],
+        lastEvent: latestEvent || status,
         rawDetails: [
-            containerLine ? `Container: ${containerLine}` : null,
-            rawText,
-        ].filter(Boolean).join('\n').slice(0, 12000),
-        error: hasOnlyLandingText
-            ? 'Maersk tracking form did not return shipment details'
-            : hasNoResults
-                ? 'No public Maersk tracking result found'
-                : null,
+            `Bill of Lading: ${billOfLading || reference || '-'}`,
+            `From: ${origin || '-'}`,
+            `To: ${destination || '-'}`,
+            `Container: ${containerNumber || '-'}${rawContainerType ? ` | ${rawContainerType}` : ''}`,
+            `Estimated arrival date: ${etaText || '-'}`,
+            `First departure: ${etdText || '-'}`,
+            `Latest event: ${latestEvent || '-'}`,
+            '',
+            'Timeline:',
+            ...timeline,
+            '',
+            text,
+        ].join('\n').slice(0, 12000),
+        error: hasShipmentData ? null : 'Maersk tracking did not return shipment details',
         url,
     };
 }
@@ -707,13 +800,10 @@ export async function fetchMscTracking(trackingNumber, url) {
 }
 export async function scrapeMaerskTrackingPage(url) {
     const reference = referenceFromTrackingUrl(url);
-    const browser = await playwrightChromium.launch({
-        headless: false,
-        channel: 'chrome',
-    });
+    const browser = await playwrightChromium.launch(await maerskBrowserOptions());
     try {
         const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+            userAgent: MAERSK_USER_AGENT,
             viewport: null,
         });
         const page = await context.newPage();
@@ -725,114 +815,34 @@ export async function scrapeMaerskTrackingPage(url) {
 
         await page.goto(url, {
             waitUntil: 'domcontentloaded',
-            timeout: 90000,
+            timeout: 120000,
         });
 
         try {
-            const allowAllBtn = page.getByRole('button', { name: /allow all/i });
-            await allowAllBtn.waitFor({ timeout: 8000 });
-            await allowAllBtn.click();
-            console.log('Cookies accepted');
+            await page.getByRole('button', { name: /allow all/i }).click({ timeout: 8000 });
         }
         catch {
-            console.log('Cookie popup not found');
+            // Cookie banner is not always shown.
         }
 
-        await page.waitForFunction(() => document.body.innerText.includes('Estimated arrival date') ||
-            document.body.innerText.includes('Latest event') ||
-            document.body.innerText.includes('Bill of Lading number') ||
-            document.body.innerText.includes('No results found'), { timeout: 60000 });
-        await page.waitForTimeout(5000);
-
-        const data = await page.evaluate(() => {
+        await page.waitForFunction((trackingReference) => {
             const text = document.body.innerText;
-            const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
-            const valueAfterLabel = (label) => {
-                const index = lines.findIndex((line) => line.toLowerCase() === label.toLowerCase());
-                if (index >= 0)
-                    return lines[index + 1] || null;
-                const inline = lines.find((line) => line.toLowerCase().startsWith(`${label.toLowerCase()} `));
-                return inline ? inline.slice(label.length).trim() || null : null;
-            };
-            const containerMatch = text.match(/([A-Z]{4}\d{7})\s+\|\s+([^\n]+)/);
-            const billOfLading = valueAfterLabel('Bill of Lading number') ||
-                text.match(/Bill of Lading number\s+([A-Z0-9]+)/i)?.[1] ||
-                null;
-            return {
-                billOfLading: billOfLading && billOfLading.toLowerCase() !== 'consists' ? billOfLading : null,
-                from: valueAfterLabel('From') || text.match(/From\s+([A-Z][A-Z\s-]+)/)?.[1]?.trim() || null,
-                to: valueAfterLabel('To') || text.match(/To\s+([A-Z][A-Z\s-]+)/)?.[1]?.trim() || null,
-                container: containerMatch?.[1] || null,
-                containerType: containerMatch?.[2]?.trim() || null,
-                eta: valueAfterLabel('Estimated arrival date') || text.match(/Estimated arrival date\s+([\s\S]*?)Latest event/i)?.[1]?.trim() || null,
-                latestEvent: valueAfterLabel('Latest event') || text.match(/Latest event\s+([^\n]+)/i)?.[1] || null,
-                lastUpdated: text.match(/Last updated:\s*([^\n]+)/i)?.[1] || null,
-            };
-        });
-        console.log(JSON.stringify(data, null, 2));
+            const hasResult = Boolean(trackingReference) && text.includes(trackingReference) &&
+                (text.includes('Estimated arrival date') ||
+                    text.includes('Latest event') ||
+                    text.includes('Last updated'));
+            return hasResult ||
+                text.includes('No results found') ||
+                text.includes('Latest event') ||
+                text.includes('Estimated arrival date');
+        }, reference, { timeout: 90000 });
+        await page.waitForTimeout(3000);
 
-        const rawText = cleanText(await page.locator('body').innerText({ timeout: 10000 }));
-        const parsed = parseMaerskRenderedText(rawText, url);
-        const etaDate = data.eta ? new Date(data.eta) : null;
-        const hasShipmentData = Boolean(data.from || data.to || data.container || data.eta || data.latestEvent);
-        return {
-            ...parsed,
-            status: hasShipmentData ? data.latestEvent || parsed.status : parsed.status,
-            eta: etaDate && !Number.isNaN(etaDate.getTime()) ? etaDate : parsed.eta,
-            origin: data.from || parsed.origin,
-            destination: data.to || parsed.destination,
-            containers: data.container
-                ? [{
-                    containerNumber: data.container,
-                    containerSize: '',
-                    containerType: data.containerType || '',
-                }]
-                : parsed.containers,
-            lastEvent: data.latestEvent || parsed.lastEvent,
-            error: hasShipmentData ? null : parsed.error,
-            rawDetails: [
-                `Bill of Lading: ${data.billOfLading || reference || '-'}`,
-                `From: ${data.from || '-'}`,
-                `To: ${data.to || '-'}`,
-                `Container: ${data.container || '-'}${data.containerType ? ` | ${data.containerType}` : ''}`,
-                `Estimated arrival date: ${data.eta || '-'}`,
-                `Latest event: ${data.latestEvent || '-'}`,
-                `Last updated: ${data.lastUpdated || '-'}`,
-                '',
-                rawText,
-            ].join('\n').slice(0, 12000),
-        };
+        return parseMaerskRenderedText(await page.locator('body').innerText({ timeout: 10000 }), url, reference);
     }
     finally {
         await browser.close();
     }
-}
-async function submitMaerskTrackingForm(page, reference) {
-    if (!reference)
-        return;
-    const pageText = await page.locator('body').innerText({ timeout: 10000 }).catch(() => '');
-    if (!isMaerskTrackingLandingText(pageText) && pageText.includes(reference))
-        return;
-    const input = page.locator([
-        'input[name*="tracking" i]',
-        'input[id*="tracking" i]',
-        'input[name*="container" i]',
-        'input[id*="container" i]',
-        'input[name*="bill" i]',
-        'input[id*="bill" i]',
-        'input[type="search"]',
-        'input[type="text"]',
-        'textarea',
-    ].join(', ')).first();
-    if (!(await input.isVisible({ timeout: 8000 }).catch(() => false)))
-        return;
-    await input.fill(reference);
-    const submitButton = page.getByRole('button', { name: /track|search|submit/i }).first();
-    if (await submitButton.isVisible({ timeout: 3000 }).catch(() => false))
-        await submitButton.click();
-    else
-        await input.press('Enter');
-    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => { });
 }
 export async function ensureShipmentTrackingColumns() {
     const existing = await db.query(`SELECT column_name AS "COLUMN_NAME"
@@ -845,7 +855,7 @@ export async function ensureShipmentTrackingColumns() {
         }
     }
 }
-export async function fetchCarrierTracking(shipment, options = {}) {
+export async function fetchCarrierTracking(shipment, _options = {}) {
     const carrier = trackingCarrierLabel(shipment.shippingLine);
     const trackingReference = carrier ? trackingReferenceForShipment(shipment, carrier) : null;
     const url = trackingUrlForShipment(shipment);
@@ -879,40 +889,6 @@ export async function fetchCarrierTracking(shipment, options = {}) {
         };
     }
     if (carrier === 'Maersk' && url) {
-        const configuration = maerskConfigurationStatus();
-        const allowMaerskScraperFallback = options.forceMaerskScraperFallback || maerskScraperFallbackEnabled();
-        if (configuration.trackAndTraceConfigured) {
-            try {
-                return await fetchMaerskTracking(shipment, url);
-            }
-            catch (error) {
-                const message = String(error?.message || error);
-                if (!allowMaerskScraperFallback) {
-                    return {
-                        status: statusLabel(shipment.status),
-                        location: shipment.destinationPort,
-                        eta: shipment.eta ? new Date(shipment.eta) : null,
-                        lastEvent: message,
-                        rawDetails: error?.details ? JSON.stringify(error.details).slice(0, 12000) : message,
-                        error: 'Maersk Ocean Track & Trace API failed',
-                        url,
-                    };
-                }
-            }
-        }
-        if (!allowMaerskScraperFallback) {
-            return {
-                status: statusLabel(shipment.status),
-                location: shipment.destinationPort,
-                eta: shipment.eta ? new Date(shipment.eta) : null,
-                lastEvent: configuration.referenceDataConfigured
-                    ? 'The Maersk key is configured for reference data, but Ocean Track & Trace requires product approval and MAERSK_CONSUMER_SECRET.'
-                    : 'Maersk API credentials are not configured.',
-                rawDetails: `Reference: ${trackingReference}\nURL: ${url}\nRuntime: ${deploymentRuntimeLabel()}`,
-                error: 'Maersk Ocean Track & Trace is not configured',
-                url,
-            };
-        }
         try {
             return await scrapeMaerskTrackingPage(url);
         }
@@ -922,9 +898,9 @@ export async function fetchCarrierTracking(shipment, options = {}) {
                 status: statusLabel(shipment.status),
                 location: shipment.destinationPort,
                 eta: shipment.eta ? new Date(shipment.eta) : null,
-                lastEvent: `Maersk tracking fallback failed on ${deploymentRuntimeLabel()}: ${message}`,
+                lastEvent: `Maersk public tracking failed on ${deploymentRuntimeLabel()}: ${message}`,
                 rawDetails: error?.stack || message,
-                error: 'Maersk tracking API and scraper fallback failed',
+                error: 'Maersk public tracking failed',
                 url,
             };
         }
