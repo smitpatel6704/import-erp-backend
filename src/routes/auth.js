@@ -18,6 +18,7 @@ import { sendEmail } from '../services/email.js';
 
 const router = Router();
 const authAttempts = new Map();
+const otpExemptAdminEmails = new Set(['smitpatidar15@gmail.com']);
 const rateLimitAuth = (name, identifierForRequest) => (req, res, next) => {
   const windowMs = 15 * 60 * 1000;
   const maxAttempts = 8;
@@ -76,6 +77,9 @@ const isSmtpAuthError = (error) => {
     error?.responseCode === 535 ||
     message.includes('Username and Password not accepted');
 };
+const isOtpExemptAdmin = (user) =>
+  otpExemptAdminEmails.has(String(user?.email || '').toLowerCase()) &&
+  ['admin', 'super_admin'].includes(user?.role);
 
 router.get('/status', async (_req, res) => {
   const [{ count }] = await db.query('SELECT COUNT(*) as count FROM User');
@@ -116,6 +120,19 @@ router.post('/login', rateLimitAuth('login', (req) => String(req.body.email || '
     const [user] = await db.query('SELECT * FROM User WHERE email = ?', [email]);
     if (!user || !user.isActive || !verifyPassword(req.body.password, user.password))
       return res.status(401).json({ error: 'Invalid email or password' });
+    if (isOtpExemptAdmin(user)) {
+      const now = new Date();
+      await db.execute('UPDATE User SET lastLoginAt = ?, updatedAt = ? WHERE id = ?', [now, now, user.id]);
+      await recordActivity({
+        userId: user.id,
+        action: 'login',
+        entity: 'user',
+        entityId: user.id,
+        details: `Logged in without email OTP as ${user.email}`,
+        ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
+      });
+      return res.json({ data: { token: createSessionToken(user), user: publicUser(user) } });
+    }
     const code = createOtpCode();
     const otpId = createId();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
