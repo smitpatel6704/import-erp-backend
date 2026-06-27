@@ -94,6 +94,18 @@ router.put('/:id', async (req, res) => {
         const body = req.body;
         const oldShipments = await db.query('SELECT status, bookingNumber, blNumber, shippingLine FROM Shipment WHERE id = ?', [id]);
         const oldShipment = oldShipments[0];
+        if (!oldShipment)
+            return res.status(404).json({ error: 'Shipment not found' });
+        if (body.blNumber) {
+            const [duplicateBl] = await db.query('SELECT shipmentNumber FROM Shipment WHERE blNumber = ? AND id <> ? AND isActive = 1', [body.blNumber, id]);
+            if (duplicateBl)
+                return res.status(409).json({ error: `BL number already exists in ${duplicateBl.shipmentNumber}` });
+        }
+        if (body.bookingNumber) {
+            const [duplicateBooking] = await db.query('SELECT shipmentNumber FROM Shipment WHERE bookingNumber = ? AND id <> ? AND isActive = 1', [body.bookingNumber, id]);
+            if (duplicateBooking)
+                return res.status(409).json({ error: `Booking number already exists in ${duplicateBooking.shipmentNumber}` });
+        }
         const updates = [];
         const values = [];
         const settableFields = [
@@ -186,7 +198,10 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     try {
-        await db.execute('UPDATE Shipment SET isActive = 0 WHERE id = ?', [id]);
+        const existing = await db.query('SELECT id FROM Shipment WHERE id = ?', [id]);
+        if (!existing.length)
+            return res.status(404).json({ error: 'Shipment not found' });
+        await db.execute('UPDATE Shipment SET isActive = 0, updatedAt = ? WHERE id = ?', [new Date(), id]);
         const shipments = await db.query('SELECT * FROM Shipment WHERE id = ?', [id]);
         return res.json({ data: shipments[0] });
     }
@@ -252,31 +267,68 @@ router.get('/', async (req, res) => {
             whereClause += ' AND isActive = ?';
             params.push(isActive === 'true' ? 1 : 0);
         }
+        else {
+            whereClause += ' AND isActive = 1';
+        }
         const countRows = await db.query(`SELECT COUNT(*) as c FROM Shipment WHERE ${whereClause}`, params);
         const total = countRows[0].c;
         const queryParams = [...params, limit, skip];
         const allowedSort = ['createdAt', 'updatedAt', 'status', 'shipmentValue', 'eta', 'etd'].includes(sortBy) ? sortBy : 'createdAt';
         const allowedDir = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
         const shipments = await db.query(`SELECT * FROM Shipment WHERE ${whereClause} ORDER BY ${allowedSort} ${allowedDir} LIMIT ? OFFSET ?`, queryParams);
-        for (const s of shipments) {
-            if (s.companyId) {
-                const comps = await db.query('SELECT id, name, contactPerson FROM Company WHERE id = ?', [s.companyId]);
-                s.company = comps[0] || null;
+        const shipmentIds = shipments.map((shipment) => shipment.id);
+        if (shipmentIds.length) {
+            const placeholders = shipmentIds.map(() => '?').join(',');
+            const companyIds = [...new Set(shipments.map((shipment) => shipment.companyId).filter(Boolean))];
+            const exporterCompanyIds = [...new Set(shipments.map((shipment) => shipment.exporterCompanyId).filter(Boolean))];
+            const companies = companyIds.length
+                ? await db.query(`SELECT id, name, contactPerson FROM Company WHERE id IN (${companyIds.map(() => '?').join(',')})`, companyIds)
+                : [];
+            const exporterCompanies = exporterCompanyIds.length
+                ? await db.query(`SELECT id, name, contactPerson FROM ExporterCompany WHERE id IN (${exporterCompanyIds.map(() => '?').join(',')})`, exporterCompanyIds)
+                : [];
+            const containers = await db.query(`
+              SELECT id, shipmentId, containerNumber, containerSize, containerType, status
+              FROM Container
+              WHERE shipmentId IN (${placeholders})
+            `, shipmentIds);
+            const countTables = [
+                ['containers', 'Container'],
+                ['documents', 'Document'],
+                ['expenses', 'Expense'],
+                ['timelineEvents', 'TimelineEvent'],
+                ['shipmentItems', 'ShipmentItem'],
+            ];
+            const countRows = await Promise.all(countTables.map(([, table]) => db.query(`
+              SELECT shipmentId, COUNT(*) as c
+              FROM ${table}
+              WHERE shipmentId IN (${placeholders})
+              GROUP BY shipmentId
+            `, shipmentIds)));
+            const companyById = new Map(companies.map((company) => [company.id, company]));
+            const exporterCompanyById = new Map(exporterCompanies.map((company) => [company.id, company]));
+            const containersByShipmentId = new Map();
+            for (const container of containers) {
+                const current = containersByShipmentId.get(container.shipmentId) || [];
+                current.push(container);
+                containersByShipmentId.set(container.shipmentId, current);
             }
-            if (s.exporterCompanyId) {
-                const exps = await db.query('SELECT id, name, contactPerson FROM ExporterCompany WHERE id = ?', [s.exporterCompanyId]);
-                s.exporterCompany = exps[0] || null;
+            const countsByTable = new Map(countTables.map(([key], index) => {
+                const rowsByShipmentId = new Map(countRows[index].map((row) => [row.shipmentId, Number(row.c || 0)]));
+                return [key, rowsByShipmentId];
+            }));
+            for (const shipment of shipments) {
+                shipment.company = shipment.companyId ? companyById.get(shipment.companyId) || null : null;
+                shipment.exporterCompany = shipment.exporterCompanyId ? exporterCompanyById.get(shipment.exporterCompanyId) || null : null;
+                shipment.containers = containersByShipmentId.get(shipment.id) || [];
+                shipment._count = {
+                    containers: countsByTable.get('containers')?.get(shipment.id) || 0,
+                    documents: countsByTable.get('documents')?.get(shipment.id) || 0,
+                    expenses: countsByTable.get('expenses')?.get(shipment.id) || 0,
+                    timelineEvents: countsByTable.get('timelineEvents')?.get(shipment.id) || 0,
+                    shipmentItems: countsByTable.get('shipmentItems')?.get(shipment.id) || 0,
+                };
             }
-            s.containers = await db.query('SELECT id, containerNumber, containerSize, containerType, status FROM Container WHERE shipmentId = ?', [s.id]);
-            const contCount = await db.query('SELECT COUNT(*) as c FROM Container WHERE shipmentId = ?', [s.id]);
-            const docCount = await db.query('SELECT COUNT(*) as c FROM Document WHERE shipmentId = ?', [s.id]);
-            const expCount = await db.query('SELECT COUNT(*) as c FROM Expense WHERE shipmentId = ?', [s.id]);
-            const tlCount = await db.query('SELECT COUNT(*) as c FROM TimelineEvent WHERE shipmentId = ?', [s.id]);
-            const itemCount = await db.query('SELECT COUNT(*) as c FROM ShipmentItem WHERE shipmentId = ?', [s.id]);
-            s._count = {
-                containers: contCount[0].c, documents: docCount[0].c, expenses: expCount[0].c,
-                timelineEvents: tlCount[0].c, shipmentItems: itemCount[0].c
-            };
         }
         return res.json({ data: shipments, pagination: { total, page, limit } });
     }
@@ -289,6 +341,16 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
     try {
         const body = req.body;
+        if (body.blNumber) {
+            const [duplicateBl] = await db.query('SELECT shipmentNumber FROM Shipment WHERE blNumber = ? AND isActive = 1', [body.blNumber]);
+            if (duplicateBl)
+                return res.status(409).json({ error: `BL number already exists in ${duplicateBl.shipmentNumber}` });
+        }
+        if (body.bookingNumber) {
+            const [duplicateBooking] = await db.query('SELECT shipmentNumber FROM Shipment WHERE bookingNumber = ? AND isActive = 1', [body.bookingNumber]);
+            if (duplicateBooking)
+                return res.status(409).json({ error: `Booking number already exists in ${duplicateBooking.shipmentNumber}` });
+        }
         const lastShipments = await db.query('SELECT shipmentNumber FROM Shipment ORDER BY createdAt DESC LIMIT 1');
         const nextNum = lastShipments.length > 0 ? parseInt(lastShipments[0].shipmentNumber.split('-').pop() || '0') + 1 : 1;
         const shipmentNumber = `SHP-${new Date().getFullYear()}-${String(nextNum).padStart(4, '0')}`;

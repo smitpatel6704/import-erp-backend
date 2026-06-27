@@ -81,16 +81,33 @@ export const normalizePermissions = (permissions) => {
   if (!Array.isArray(permissions)) return [];
   return permissions
     .filter((item) => item && typeof item.module === 'string')
-    .map((item) => ({
-      module: item.module,
-      access: item.access === 'edit' ? 'edit' : 'view',
-    }));
+    .map((item) => {
+      const actions = item.actions && typeof item.actions === 'object'
+        ? Object.fromEntries(
+            ['create', 'update', 'delete', 'upload', 'export', 'import', 'verify']
+              .map((action) => [action, item.actions[action] !== false])
+          )
+        : undefined;
+      return {
+        module: item.module,
+        access: item.access === 'edit' ? 'edit' : 'view',
+        ...(actions ? { actions } : {}),
+      };
+    });
 };
 
 export const permissionFor = (user, module) => {
   if (user?.role === 'admin' || user?.role === 'super_admin') return 'edit';
   const permissions = normalizePermissions(user?.permissions);
   return permissions.find((item) => item.module === module)?.access || null;
+};
+
+export const canPerformAction = (user, module, action) => {
+  if (user?.role === 'admin' || user?.role === 'super_admin') return true;
+  const permission = normalizePermissions(user?.permissions).find((item) => item.module === module);
+  if (!permission || permission.access !== 'edit') return false;
+  if (!permission.actions) return true;
+  return permission.actions[action] !== false;
 };
 
 export async function authenticate(req, res, next) {
@@ -121,5 +138,24 @@ export const requireModulePermission = (module) => (req, res, next) => {
   const writeRequest = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
   if (!access || (writeRequest && access !== 'edit'))
     return res.status(403).json({ error: `You do not have ${writeRequest ? 'edit' : 'view'} access to ${module}` });
+  const path = String(req.path || '').toLowerCase();
+  const exportRequest = ['GET', 'HEAD'].includes(req.method) && (path.includes('export') || path.includes('download'));
+  if (writeRequest || exportRequest) {
+    const action = exportRequest
+      ? 'export'
+      : req.method === 'DELETE'
+      ? 'delete'
+      : path.includes('/status') || path.endsWith('status')
+        ? 'verify'
+      : path.includes('upload')
+        ? 'upload'
+        : path.includes('merge') || path.includes('export')
+          ? 'export'
+          : req.method === 'POST'
+            ? 'create'
+            : 'update';
+    if (!canPerformAction(req.user, module, action))
+      return res.status(403).json({ error: `You do not have ${action} permission for ${module}` });
+  }
   return next();
 };

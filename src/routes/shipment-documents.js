@@ -14,6 +14,13 @@ import {
     storeUploadedDocumentFile,
 } from '../services/document-files.js';
 const router = Router();
+const safeDownloadName = (value, fallback = 'shipment-documents.pdf') => {
+    const name = String(value || fallback)
+        .replace(/[/\\?%*:|"<>]/g, '-')
+        .replace(/\s+/g, ' ')
+        .trim() || fallback;
+    return name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`;
+};
 // Configure Multer for local storage
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -133,11 +140,40 @@ router.post('/shipment/:id/merge', async (req, res) => {
             bundleId, shipmentId, req.body.name || 'Merged shipment documents',
             fileUrl, JSON.stringify(documentIds), req.body.createdBy || null, new Date()
         ]);
-        return res.status(201).json({ data: { id: bundleId, shipmentId, fileUrl, documentIds } });
+        return res.status(201).json({
+            data: {
+                id: bundleId,
+                shipmentId,
+                fileUrl,
+                documentIds,
+                downloadUrl: `/api/shipment-documents/bundles/${bundleId}/download`,
+                fileName: safeDownloadName(req.body.name || 'Merged shipment documents'),
+            }
+        });
     }
     catch (error) {
         console.error('Document merge error:', error);
         return res.status(500).json({ error: 'Failed to merge documents' });
+    }
+});
+router.get('/bundles/:id/download', async (req, res) => {
+    try {
+        const [bundle] = await db.query('SELECT * FROM DocumentBundle WHERE id = ?', [req.params.id]);
+        if (!bundle?.fileUrl)
+            return res.status(404).json({ error: 'Bundle not found' });
+        const buffer = await readDocumentFileBuffer(bundle.fileUrl);
+        if (!buffer)
+            return res.status(404).json({ error: 'Bundle file not found' });
+        const fileName = safeDownloadName(bundle.name || path.basename(bundle.fileUrl));
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Length', String(buffer.length));
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        return res.send(buffer);
+    }
+    catch (error) {
+        console.error('Bundle download error:', error);
+        return res.status(500).json({ error: 'Failed to download bundle' });
     }
 });
 // ============================================
