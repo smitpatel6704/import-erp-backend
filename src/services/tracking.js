@@ -36,6 +36,10 @@ export const trackingCarrierLabel = (shippingLine) => {
 const normalizeTrackingReference = (value) => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
 const isContainerNumber = (value) => /^[A-Z]{4}\d{7}$/.test(value);
 const isMaerskDocumentNumber = (value) => /^[A-Z0-9]{9}$/.test(value);
+const referenceFromTrackingUrl = (url) => {
+    const pathname = new URL(url).pathname;
+    return normalizeTrackingReference(decodeURIComponent(pathname.split('/').filter(Boolean).pop() || ''));
+};
 const trackingReferencesForShipment = (shipment, carrier) => {
     const containerNumbers = [
         ...(shipment.containerNumbers || []),
@@ -158,7 +162,7 @@ const cleanText = (value) => value
     .join('\n');
 const inferStatusFromTrackingText = (text) => {
     const normalized = text.toLowerCase();
-    if (normalized.includes('no results found'))
+    if (normalized.includes('no results found') || normalized.includes("couldn't find"))
         return 'No results found';
     if (normalized.includes('delivered'))
         return 'Delivered';
@@ -177,6 +181,16 @@ const inferStatusFromTrackingText = (text) => {
     if (normalized.includes('discharged'))
         return 'Discharged';
     return 'Tracking details available';
+};
+const isMaerskTrackingLandingText = (text) => {
+    const normalized = text.toLowerCase();
+    return normalized.includes('shipment & container tracking') &&
+        normalized.includes('select your booking type') &&
+        normalized.includes('container number is made of 4 letters and 7 digits') &&
+        !normalized.includes('latest event') &&
+        !normalized.includes('estimated arrival date') &&
+        !normalized.includes('no results found') &&
+        !normalized.includes("couldn't find");
 };
 const formatDate = (value) => {
     if (!value)
@@ -514,6 +528,7 @@ export async function fetchMaerskTracking(shipment, url) {
 function parseMaerskRenderedText(rawText, url) {
     const status = inferStatusFromTrackingText(rawText);
     const hasNoResults = status === 'No results found';
+    const hasOnlyLandingText = isMaerskTrackingLandingText(rawText);
     const lines = rawText.split('\n');
     const containerLine = lines.find((line) => /^[A-Z]{4}\d{7}/.test(line));
     const latestEventIndex = lines.findIndex((line) => line.toLowerCase().includes('latest event'));
@@ -525,7 +540,7 @@ function parseMaerskRenderedText(rawText, url) {
         ? lines.slice(lines.findIndex((line) => line.toLowerCase().includes('no results found')), 4).join(' ')
         : latestEvent || arrivedLine || lines.find((line) => /arrival|departure|loaded|discharged|gate|delivered|transit/i.test(line)) || status;
     return {
-        status: arrivedLine || status,
+        status: hasOnlyLandingText ? 'Tracking form did not return details' : arrivedLine || status,
         location: arrivedLine?.replace(/^Arrived at /i, '') || null,
         eta: null,
         etd: null,
@@ -539,12 +554,16 @@ function parseMaerskRenderedText(rawText, url) {
             containerSize: '',
             containerType: '',
         }] : [],
-        lastEvent: lastEvent || status,
+        lastEvent: hasOnlyLandingText ? 'Maersk showed the tracking form but no shipment result.' : lastEvent || status,
         rawDetails: [
             containerLine ? `Container: ${containerLine}` : null,
             rawText,
         ].filter(Boolean).join('\n').slice(0, 12000),
-        error: hasNoResults ? 'No public Maersk tracking result found' : null,
+        error: hasOnlyLandingText
+            ? 'Maersk tracking form did not return shipment details'
+            : hasNoResults
+                ? 'No public Maersk tracking result found'
+                : null,
         url,
     };
 }
@@ -687,51 +706,133 @@ export async function fetchMscTracking(trackingNumber, url) {
     };
 }
 export async function scrapeMaerskTrackingPage(url) {
-    const browser = await playwrightChromium.launch(await maerskBrowserOptions());
+    const reference = referenceFromTrackingUrl(url);
+    const browser = await playwrightChromium.launch({
+        headless: false,
+        channel: 'chrome',
+    });
     try {
         const context = await browser.newContext({
-            viewport: { width: 1600, height: 1000 },
             userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+            viewport: null,
         });
         const page = await context.newPage();
-        const apiTracking = { body: '' };
-        page.on('response', async (response) => {
-            const resUrl = response.url();
-            if (!resUrl.includes('tracking') &&
-                !resUrl.includes('shipment') &&
-                !resUrl.includes('synergy')) {
-                return;
-            }
-            try {
-                const text = await response.text();
-                const trimmed = text.trim();
-                if (!trimmed.startsWith('{'))
-                    return;
-                if (trimmed.includes('containers') ||
-                    trimmed.includes('container_num') ||
-                    trimmed.includes('tpdoc_num')) {
-                    apiTracking.body = trimmed;
-                    console.log('TRACKING API FOUND:', resUrl);
-                }
-            }
-            catch { }
+        await page.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => false,
+            });
         });
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: MAERSK_SCRAPER_TIMEOUT_MS });
-        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => { });
-        await page.waitForFunction(() => document.body.innerText.includes('Bill of Lading number') ||
-            document.body.innerText.includes('Estimated arrival date') ||
-            document.body.innerText.includes('Latest event') ||
-            document.body.innerText.includes("couldn't find"), { timeout: MAERSK_SCRAPER_TIMEOUT_MS }).catch(() => { });
-        await page.waitForTimeout(1500);
-        if (apiTracking.body.trim().startsWith('{')) {
-            return parseMaerskApiTracking(JSON.parse(apiTracking.body), url);
+
+        await page.goto(url, {
+            waitUntil: 'domcontentloaded',
+            timeout: 90000,
+        });
+
+        try {
+            const allowAllBtn = page.getByRole('button', { name: /allow all/i });
+            await allowAllBtn.waitFor({ timeout: 8000 });
+            await allowAllBtn.click();
+            console.log('Cookies accepted');
         }
+        catch {
+            console.log('Cookie popup not found');
+        }
+
+        await page.waitForFunction(() => document.body.innerText.includes('Estimated arrival date') ||
+            document.body.innerText.includes('Latest event') ||
+            document.body.innerText.includes('Bill of Lading number') ||
+            document.body.innerText.includes('No results found'), { timeout: 60000 });
+        await page.waitForTimeout(5000);
+
+        const data = await page.evaluate(() => {
+            const text = document.body.innerText;
+            const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+            const valueAfterLabel = (label) => {
+                const index = lines.findIndex((line) => line.toLowerCase() === label.toLowerCase());
+                if (index >= 0)
+                    return lines[index + 1] || null;
+                const inline = lines.find((line) => line.toLowerCase().startsWith(`${label.toLowerCase()} `));
+                return inline ? inline.slice(label.length).trim() || null : null;
+            };
+            const containerMatch = text.match(/([A-Z]{4}\d{7})\s+\|\s+([^\n]+)/);
+            const billOfLading = valueAfterLabel('Bill of Lading number') ||
+                text.match(/Bill of Lading number\s+([A-Z0-9]+)/i)?.[1] ||
+                null;
+            return {
+                billOfLading: billOfLading && billOfLading.toLowerCase() !== 'consists' ? billOfLading : null,
+                from: valueAfterLabel('From') || text.match(/From\s+([A-Z][A-Z\s-]+)/)?.[1]?.trim() || null,
+                to: valueAfterLabel('To') || text.match(/To\s+([A-Z][A-Z\s-]+)/)?.[1]?.trim() || null,
+                container: containerMatch?.[1] || null,
+                containerType: containerMatch?.[2]?.trim() || null,
+                eta: valueAfterLabel('Estimated arrival date') || text.match(/Estimated arrival date\s+([\s\S]*?)Latest event/i)?.[1]?.trim() || null,
+                latestEvent: valueAfterLabel('Latest event') || text.match(/Latest event\s+([^\n]+)/i)?.[1] || null,
+                lastUpdated: text.match(/Last updated:\s*([^\n]+)/i)?.[1] || null,
+            };
+        });
+        console.log(JSON.stringify(data, null, 2));
+
         const rawText = cleanText(await page.locator('body').innerText({ timeout: 10000 }));
-        return parseMaerskRenderedText(rawText, url);
+        const parsed = parseMaerskRenderedText(rawText, url);
+        const etaDate = data.eta ? new Date(data.eta) : null;
+        const hasShipmentData = Boolean(data.from || data.to || data.container || data.eta || data.latestEvent);
+        return {
+            ...parsed,
+            status: hasShipmentData ? data.latestEvent || parsed.status : parsed.status,
+            eta: etaDate && !Number.isNaN(etaDate.getTime()) ? etaDate : parsed.eta,
+            origin: data.from || parsed.origin,
+            destination: data.to || parsed.destination,
+            containers: data.container
+                ? [{
+                    containerNumber: data.container,
+                    containerSize: '',
+                    containerType: data.containerType || '',
+                }]
+                : parsed.containers,
+            lastEvent: data.latestEvent || parsed.lastEvent,
+            error: hasShipmentData ? null : parsed.error,
+            rawDetails: [
+                `Bill of Lading: ${data.billOfLading || reference || '-'}`,
+                `From: ${data.from || '-'}`,
+                `To: ${data.to || '-'}`,
+                `Container: ${data.container || '-'}${data.containerType ? ` | ${data.containerType}` : ''}`,
+                `Estimated arrival date: ${data.eta || '-'}`,
+                `Latest event: ${data.latestEvent || '-'}`,
+                `Last updated: ${data.lastUpdated || '-'}`,
+                '',
+                rawText,
+            ].join('\n').slice(0, 12000),
+        };
     }
     finally {
         await browser.close();
     }
+}
+async function submitMaerskTrackingForm(page, reference) {
+    if (!reference)
+        return;
+    const pageText = await page.locator('body').innerText({ timeout: 10000 }).catch(() => '');
+    if (!isMaerskTrackingLandingText(pageText) && pageText.includes(reference))
+        return;
+    const input = page.locator([
+        'input[name*="tracking" i]',
+        'input[id*="tracking" i]',
+        'input[name*="container" i]',
+        'input[id*="container" i]',
+        'input[name*="bill" i]',
+        'input[id*="bill" i]',
+        'input[type="search"]',
+        'input[type="text"]',
+        'textarea',
+    ].join(', ')).first();
+    if (!(await input.isVisible({ timeout: 8000 }).catch(() => false)))
+        return;
+    await input.fill(reference);
+    const submitButton = page.getByRole('button', { name: /track|search|submit/i }).first();
+    if (await submitButton.isVisible({ timeout: 3000 }).catch(() => false))
+        await submitButton.click();
+    else
+        await input.press('Enter');
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => { });
 }
 export async function ensureShipmentTrackingColumns() {
     const existing = await db.query(`SELECT column_name AS "COLUMN_NAME"
@@ -744,7 +845,7 @@ export async function ensureShipmentTrackingColumns() {
         }
     }
 }
-export async function fetchCarrierTracking(shipment) {
+export async function fetchCarrierTracking(shipment, options = {}) {
     const carrier = trackingCarrierLabel(shipment.shippingLine);
     const trackingReference = carrier ? trackingReferenceForShipment(shipment, carrier) : null;
     const url = trackingUrlForShipment(shipment);
@@ -779,13 +880,14 @@ export async function fetchCarrierTracking(shipment) {
     }
     if (carrier === 'Maersk' && url) {
         const configuration = maerskConfigurationStatus();
+        const allowMaerskScraperFallback = options.forceMaerskScraperFallback || maerskScraperFallbackEnabled();
         if (configuration.trackAndTraceConfigured) {
             try {
                 return await fetchMaerskTracking(shipment, url);
             }
             catch (error) {
                 const message = String(error?.message || error);
-                if (!maerskScraperFallbackEnabled()) {
+                if (!allowMaerskScraperFallback) {
                     return {
                         status: statusLabel(shipment.status),
                         location: shipment.destinationPort,
@@ -798,7 +900,7 @@ export async function fetchCarrierTracking(shipment) {
                 }
             }
         }
-        if (!maerskScraperFallbackEnabled()) {
+        if (!allowMaerskScraperFallback) {
             return {
                 status: statusLabel(shipment.status),
                 location: shipment.destinationPort,

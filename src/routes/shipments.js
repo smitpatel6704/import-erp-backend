@@ -43,6 +43,8 @@ router.post('/tracking/lookup', async (req, res) => {
             status: 'draft',
             destinationPort: null,
             eta: null,
+        }, {
+            forceMaerskScraperFallback: trackingCarrierLabel(shippingLine) === 'Maersk',
         });
         return res.json({ data: result });
     }

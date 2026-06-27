@@ -70,6 +70,13 @@ const sendLoginOtpEmail = (user, code) => sendEmail({
   `,
 });
 
+const isSmtpAuthError = (error) => {
+  const message = String(error?.message || error?.response || error || '');
+  return error?.code === 'EAUTH' ||
+    error?.responseCode === 535 ||
+    message.includes('Username and Password not accepted');
+};
+
 router.get('/status', async (_req, res) => {
   const [{ count }] = await db.query('SELECT COUNT(*) as count FROM User');
   return res.json({ data: { needsBootstrap: Number(count) === 0 } });
@@ -128,6 +135,12 @@ router.post('/login', rateLimitAuth('login', (req) => String(req.body.email || '
     const message = String(error?.message || error || '');
     if (message.includes('SMTP is not configured'))
       return res.status(500).json({ error: 'Email OTP is not configured. Set SMTP_USER and SMTP_PASS in backend/.env.' });
+    if (isSmtpAuthError(error)) {
+      console.error('Login OTP SMTP authentication error:', error?.response || error?.message || error);
+      return res.status(500).json({
+        error: 'Gmail rejected the SMTP credentials. Use a Google App Password in SMTP_PASS, not the Gmail account password.',
+      });
+    }
     console.error('Login OTP error:', error);
     return res.status(500).json({ error: 'Unable to send login OTP' });
   }
