@@ -26,6 +26,7 @@ import cronRouter from './routes/cron.js';
 import maerskRouter from './routes/maersk.js';
 import { auditMutation } from './services/audit.js';
 import { authenticate, requireAdmin, requireModulePermission } from './services/auth.js';
+import { sendStoredDocumentFile } from './services/document-files.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
@@ -41,6 +42,7 @@ app.use((_req, res, next) => {
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+app.get('/uploads/:filename', sendStoredDocumentFile);
 app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
 });

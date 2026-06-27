@@ -3,7 +3,7 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 const { Pool } = pg;
 const schemaIdentifiers = [
-    'Activity', 'Company', 'Container', 'CustomsClearance', 'Document', 'DocumentChecklist',
+    'Activity', 'Company', 'Container', 'CustomsClearance', 'Document', 'DocumentChecklist', 'DocumentFile',
     'DocumentBundle', 'Expense', 'ExporterCompany', 'Invoice', 'InvoiceItem', 'Logistics', 'Notification',
     'Product', 'SettingOption', 'Shipment', 'ShipmentDocument', 'ShipmentItem', 'TimelineEvent', 'LoginOtp',
     'Transaction', 'User',
@@ -20,7 +20,7 @@ const schemaIdentifiers = [
     'driverName', 'driverPhone', 'dueDate', 'dutyAmount', 'dutyStatus', 'entityId', 'exchangeRate',
     'dedupeKey', 'documentIds', 'emailEnabled', 'emailError', 'emailRecipients', 'emailSentAt',
     'emailStatus', 'expiresAt', 'expiryDate', 'expiryRequired', 'exporterCompany', 'exporterCompanyId', 'fileSize', 'fileType',
-    'fileUrl', 'freightForwarder', 'grossWeight', 'gstNumber', 'hsCode', 'iecCode', 'internalNotes',
+    'fileData', 'fileName', 'fileUrl', 'freightForwarder', 'grossWeight', 'gstNumber', 'hsCode', 'iecCode', 'internalNotes',
     'goodsDescription', 'invoiceId', 'invoiceNumber', 'invoiceType', 'ipAddress', 'isActive', 'isRead', 'isRequired',
     'isVerified', 'issueDate', 'lastLoginAt', 'netWeight', 'officeAddress', 'offloadDate',
     'originCountry', 'originPort', 'packingType', 'paidAmount', 'panNumber', 'passwordSetAt',

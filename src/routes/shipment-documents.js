@@ -5,15 +5,23 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { randomBytes } from 'crypto';
+import os from 'os';
 import { PDFDocument } from 'pdf-lib';
 import { createNotification, notificationRecipients } from '../services/notifications.js';
+import {
+    readDocumentFileBuffer,
+    storeDocumentBuffer,
+    storeUploadedDocumentFile,
+} from '../services/document-files.js';
 const router = Router();
 // Configure Multer for local storage
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        const uploadDir = 'uploads/';
+        const uploadDir = process.env.VERCEL
+            ? path.join(os.tmpdir(), 'uploads')
+            : path.resolve(process.cwd(), 'uploads');
         if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir);
+            fs.mkdirSync(uploadDir, { recursive: true });
         }
         cb(null, uploadDir);
     },
@@ -95,20 +103,29 @@ router.post('/shipment/:id/merge', async (req, res) => {
             const document = byId.get(documentId);
             if (!document?.fileUrl || !document.fileUrl.toLowerCase().endsWith('.pdf'))
                 return res.status(400).json({ error: `Document ${documentId} is missing or is not a PDF` });
-            const filePath = path.resolve(process.cwd(), document.fileUrl.replace(/^\/+/, ''));
-            const uploadsRoot = path.resolve(process.cwd(), 'uploads');
-            if (!filePath.startsWith(`${uploadsRoot}${path.sep}`) || !fs.existsSync(filePath))
+            const buffer = await readDocumentFileBuffer(document.fileUrl);
+            if (!buffer)
                 return res.status(400).json({ error: `Document file ${documentId} is unavailable` });
-            const source = await PDFDocument.load(fs.readFileSync(filePath));
+            const source = await PDFDocument.load(buffer);
             const pages = await merged.copyPages(source, source.getPageIndices());
             pages.forEach((page) => merged.addPage(page));
         }
         const bundleId = createId();
         const filename = `bundle-${shipmentId}-${Date.now()}.pdf`;
-        const uploadDir = path.resolve(process.cwd(), 'uploads');
+        const uploadDir = process.env.VERCEL
+            ? path.join(os.tmpdir(), 'uploads')
+            : path.resolve(process.cwd(), 'uploads');
         fs.mkdirSync(uploadDir, { recursive: true });
-        fs.writeFileSync(path.join(uploadDir, filename), await merged.save());
+        const mergedBytes = await merged.save();
+        const mergedBuffer = Buffer.from(mergedBytes);
+        fs.writeFileSync(path.join(uploadDir, filename), mergedBuffer);
         const fileUrl = `/uploads/${filename}`;
+        await storeDocumentBuffer({
+            fileUrl,
+            fileName: filename,
+            fileType: 'application/pdf',
+            buffer: mergedBuffer,
+        });
         await db.execute(`
           INSERT INTO DocumentBundle (id, shipmentId, name, fileUrl, documentIds, createdBy, createdAt)
           VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -228,6 +245,7 @@ router.post('/shipment/:id/upload', uploadDocumentFile, async (req, res) => {
         const fileUrl = `/uploads/${req.file.filename}`;
         const fileType = req.file.mimetype;
         const fileSize = req.file.size;
+        await storeUploadedDocumentFile(req.file, fileUrl);
         // Check if record already exists
         const existing = await db.query('SELECT id FROM ShipmentDocument WHERE shipmentId = ? AND checklistId = ?', [shipmentId, checklistId]);
         if (existing && existing.length > 0) {

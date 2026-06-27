@@ -64,6 +64,15 @@ const statements = [
     "createdAt" TIMESTAMP NOT NULL DEFAULT NOW()
   )`,
   `CREATE INDEX IF NOT EXISTS "DocumentBundle_shipmentId_idx" ON "DocumentBundle" ("shipmentId")`,
+  `CREATE TABLE IF NOT EXISTS "DocumentFile" (
+    "fileUrl" TEXT PRIMARY KEY,
+    "fileName" TEXT NOT NULL,
+    "fileType" TEXT NOT NULL,
+    "fileSize" INTEGER NOT NULL,
+    "fileData" BYTEA NOT NULL,
+    "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
+  )`,
   `INSERT INTO "SettingOption" ("id", "category", "value", "label", "isActive")
     SELECT 'default-shipping-line-evergreen', 'shipping_line', 'Evergreen', 'Evergreen', TRUE
     WHERE NOT EXISTS (
