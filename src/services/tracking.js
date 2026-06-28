@@ -785,6 +785,7 @@ export async function fetchMscTracking(trackingNumber, url) {
 }
 export async function scrapeMaerskTrackingPage(url) {
     const reference = referenceFromTrackingUrl(url);
+    console.log(`[Maersk] Scraping started | ref: ${reference} | url: ${url}`);
     const browser = await playwrightChromium.launch(await maerskBrowserOptions());
     try {
         const context = await browser.newContext({
@@ -802,9 +803,11 @@ export async function scrapeMaerskTrackingPage(url) {
             waitUntil: 'networkidle',
             timeout: 120000,
         });
+        console.log(`[Maersk] Page loaded | ref: ${reference}`);
 
         try {
             await page.getByRole('button', { name: /allow all/i }).click({ timeout: 8000 });
+            console.log(`[Maersk] Cookie banner dismissed | ref: ${reference}`);
         }
         catch {
             // Cookie banner is not always shown.
@@ -816,10 +819,20 @@ export async function scrapeMaerskTrackingPage(url) {
         }, { timeout: 90000 });
         await page.waitForTimeout(3000);
 
-        return parseMaerskRenderedText(await page.locator('body').innerText({ timeout: 10000 }), url, reference);
+        const bodyText = await page.locator('body').innerText({ timeout: 10000 });
+        const result = parseMaerskRenderedText(bodyText, url, reference);
+
+        if (result.error) {
+            console.log(`[Maersk] No results | ref: ${reference} | reason: ${result.error}`);
+        } else {
+            console.log(`[Maersk] Scraped OK | ref: ${reference} | status: ${result.status} | lastEvent: ${result.lastEvent}`);
+        }
+
+        return result;
     }
     finally {
         await browser.close();
+        console.log(`[Maersk] Browser closed | ref: ${reference}`);
     }
 }
 export async function ensureShipmentTrackingColumns() {
@@ -872,6 +885,7 @@ export async function fetchCarrierTracking(shipment, _options = {}) {
         }
         catch (error) {
             const message = String(error?.message || error);
+            console.error(`[Maersk] Scrape failed | url: ${url} | error: ${message}`);
             return {
                 status: statusLabel(shipment.status),
                 location: shipment.destinationPort,
