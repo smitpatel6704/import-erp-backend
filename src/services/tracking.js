@@ -855,7 +855,7 @@ export async function ensureShipmentTrackingColumns() {
         }
     }
 }
-export async function fetchCarrierTracking(shipment, _options = {}) {
+export async function fetchCarrierTracking(shipment, options = {}) {
     const carrier = trackingCarrierLabel(shipment.shippingLine);
     const trackingReference = carrier ? trackingReferenceForShipment(shipment, carrier) : null;
     const url = trackingUrlForShipment(shipment);
@@ -890,6 +890,13 @@ export async function fetchCarrierTracking(shipment, _options = {}) {
     }
     if (carrier === 'Maersk' && url) {
         try {
+            if (!options.forceMaerskScraperFallback) {
+                try {
+                    return await fetchMaerskTracking(shipment, url);
+                } catch (apiError) {
+                    console.warn('Maersk API failed or not configured, falling back to scraper...', apiError.message || apiError);
+                }
+            }
             return await scrapeMaerskTrackingPage(url);
         }
         catch (error) {
