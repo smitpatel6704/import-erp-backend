@@ -7,6 +7,15 @@ import {
     MaerskApiError,
 } from './maersk.js';
 import { evergreenTrackingUrl, fetchEvergreenTracking } from './evergreen.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const execFileAsync = promisify(execFile);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const merskScriptPath = path.resolve(__dirname, '../../../scrap/mersk.js');
+
 const TRACKING_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MSC_TRACKING_PAGE = 'https://www.msc.com/en/track-a-shipment';
 const MSC_TRACKING_API = 'https://www.msc.com/api/feature/tools/TrackingInfo';
@@ -890,14 +899,49 @@ export async function fetchCarrierTracking(shipment, options = {}) {
     }
     if (carrier === 'Maersk' && url) {
         try {
-            if (!options.forceMaerskScraperFallback) {
-                try {
-                    return await fetchMaerskTracking(shipment, url);
-                } catch (apiError) {
-                    console.warn('Maersk API failed or not configured, falling back to scraper...', apiError.message || apiError);
+            const { stdout } = await execFileAsync('node', [merskScriptPath, trackingReference], { maxBuffer: 1024 * 1024 * 10 });
+            
+            let data;
+            try {
+                // Find the first JSON object in the output (in case there's debug output)
+                const jsonStart = stdout.indexOf('{');
+                const jsonEnd = stdout.lastIndexOf('}');
+                if (jsonStart !== -1 && jsonEnd !== -1) {
+                    data = JSON.parse(stdout.slice(jsonStart, jsonEnd + 1));
+                } else {
+                    throw new Error('No JSON output from script');
                 }
+            } catch (err) {
+                console.error("Failed to parse mersk.js output:", stdout);
+                throw new Error("Invalid output from Maersk scraper");
             }
-            return await scrapeMaerskTrackingPage(url);
+
+            if (data.ok === false) {
+                throw new Error(data.error || 'Maersk tracking failed');
+            }
+
+            const rawDetails = JSON.stringify(data.raw || data, null, 2);
+            
+            return {
+                status: data.notes ? (data.notes.replace('Latest event: ', '') || statusLabel(shipment.status)) : statusLabel(shipment.status),
+                location: data.destinationPort || shipment.destinationPort || null,
+                eta: data.eta ? new Date(data.eta) : null,
+                etd: data.etd ? new Date(data.etd) : null,
+                origin: data.originPort || null,
+                originCountry: data.originCountry || null,
+                destination: data.destinationPort || null,
+                vesselName: data.vesselName || null,
+                voyageNumber: null,
+                containers: data.containers ? data.containers.map(c => ({
+                    containerNumber: c.containerNumber || '',
+                    containerSize: c.size || '',
+                    containerType: c.type || ''
+                })) : [],
+                lastEvent: data.notes || data.status || statusLabel(shipment.status),
+                rawDetails: rawDetails.slice(0, 12000),
+                error: null,
+                url,
+            };
         }
         catch (error) {
             const message = String(error?.message || error);
@@ -905,7 +949,7 @@ export async function fetchCarrierTracking(shipment, options = {}) {
                 status: statusLabel(shipment.status),
                 location: shipment.destinationPort,
                 eta: shipment.eta ? new Date(shipment.eta) : null,
-                lastEvent: `Maersk public tracking failed on ${deploymentRuntimeLabel()}: ${message}`,
+                lastEvent: `Maersk tracking failed: ${message}`,
                 rawDetails: error?.stack || message,
                 error: 'Maersk public tracking failed',
                 url,
