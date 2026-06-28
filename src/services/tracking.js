@@ -803,6 +803,7 @@ export async function fetchMscTracking(trackingNumber, url) {
 export async function scrapeMaerskTrackingPage(url) {
     const reference = referenceFromTrackingUrl(url);
     const browser = await playwrightChromium.launch(await maerskBrowserOptions());
+    console.log("browser", browser)
     try {
         const context = await browser.newContext({
             userAgent: MAERSK_USER_AGENT,
@@ -823,7 +824,8 @@ export async function scrapeMaerskTrackingPage(url) {
         try {
             await page.getByRole('button', { name: /allow all/i }).click({ timeout: 8000 });
         }
-        catch {
+        catch(error) {
+            console.log("error", error)
             // Cookie banner is not always shown.
         }
 
