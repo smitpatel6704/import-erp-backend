@@ -819,7 +819,7 @@ export async function scrapeMaerskTrackingPage(url) {
         });
 
         try {
-            await page.getByRole('button', { name: /allow all/i }).click({ timeout: 200000 });
+            await page.getByRole('button', { name: /allow all/i }).click({ timeout: 80000 });
         }
         catch {
             // Cookie banner is not always shown.
@@ -912,6 +912,7 @@ export async function fetchCarrierTracking(shipment, options = {}) {
             };
         }
     }
+    if (carrier === 'MSC' && url) {
         try {
             return await fetchMscTracking(trackingReference, url);
         }
