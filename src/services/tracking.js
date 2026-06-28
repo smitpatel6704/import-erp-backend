@@ -1,5 +1,5 @@
 import { createId } from '@paralleldrive/cuid2';
-import { chromium as playwrightChromium } from 'playwright-core';
+import { chromium as playwrightChromium } from 'playwright';
 import { db } from '../db.js';
 import { createNotification, notificationRecipients } from './notifications.js';
 import {
@@ -141,14 +141,17 @@ const maerskBrowserOptions = async () => {
             executablePath: await serverlessChromium.executablePath(),
             args: [
                 ...serverlessChromium.args,
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
                 '--disable-blink-features=AutomationControlled',
             ],
         };
     }
     return {
         headless: maerskScraperHeadless(),
-        executablePath: localChromeExecutablePath(),
-        args: ['--disable-blink-features=AutomationControlled'],
+        channel: 'chrome',
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
     };
 };
 const cleanText = (value) => value
@@ -572,26 +575,8 @@ function parseMaerskRenderedText(rawText, url, reference = '') {
             url,
         };
     }
-    if (hasOnlyLandingText) {
-        return {
-            status: 'Tracking form did not return details',
-            location: null,
-            eta: null,
-            etd: null,
-            origin: null,
-            originCountry: null,
-            destination: null,
-            vesselName: null,
-            voyageNumber: null,
-            containers: [],
-            lastEvent: 'Maersk showed the tracking form but no shipment result.',
-            rawDetails: text.slice(0, 12000),
-            error: 'Maersk tracking form did not return shipment details',
-            url,
-        };
-    }
 
-    const billOfLading = getMatch(/Bill of Lading number\s+([A-Z0-9]+)/i);
+    const billOfLading = getMatch(/Bill of Lading number\s+(\d+)/i);
     const origin = getMatch(/Bill of Lading number\s+[A-Z0-9]+\s+From\s+([^\n]+?)\s+To/i);
     const destination = getMatch(/To\s+([^\n]+?)\s+(?:[A-Z]{4}\d{7}|Last updated|Estimated arrival date)/i);
     const containerNumber = getMatch(/([A-Z]{4}\d{7})\s*\|/i);
@@ -814,7 +799,7 @@ export async function scrapeMaerskTrackingPage(url) {
         });
 
         await page.goto(url, {
-            waitUntil: 'domcontentloaded',
+            waitUntil: 'networkidle',
             timeout: 120000,
         });
 
@@ -825,17 +810,10 @@ export async function scrapeMaerskTrackingPage(url) {
             // Cookie banner is not always shown.
         }
 
-        await page.waitForFunction((trackingReference) => {
+        await page.waitForFunction(() => {
             const text = document.body.innerText;
-            const hasResult = Boolean(trackingReference) && text.includes(trackingReference) &&
-                (text.includes('Estimated arrival date') ||
-                    text.includes('Latest event') ||
-                    text.includes('Last updated'));
-            return hasResult ||
-                text.includes('No results found') ||
-                text.includes('Latest event') ||
-                text.includes('Estimated arrival date');
-        }, reference, { timeout: 90000 });
+            return text.includes('Bill of Lading number') || text.includes('No results found');
+        }, { timeout: 90000 });
         await page.waitForTimeout(3000);
 
         return parseMaerskRenderedText(await page.locator('body').innerText({ timeout: 10000 }), url, reference);
