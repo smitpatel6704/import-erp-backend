@@ -856,9 +856,11 @@ export async function ensureShipmentTrackingColumns() {
     }
 }
 export async function fetchCarrierTracking(shipment, options = {}) {
+    console.log("log1", shipment)
     const carrier = trackingCarrierLabel(shipment.shippingLine);
     const trackingReference = carrier ? trackingReferenceForShipment(shipment, carrier) : null;
     const url = trackingUrlForShipment(shipment);
+    console.log("log2", carrier, trackingReference, url)
     if (!carrier) {
         return {
             status: statusLabel(shipment.status),
@@ -973,6 +975,7 @@ export async function syncShipmentTracking(id, force = false) {
         return shipment;
     }
     const result = await fetchCarrierTracking(shipment);
+    console.log("log3", result)
     if (result.status === 'No results found' &&
         shipment.carrierTrackingRawDetails &&
         shipment.carrierTrackingStatus &&
@@ -1065,12 +1068,12 @@ export async function syncDueShipmentTrackings(carrier = null) {
                 shippingLine LIKE '%maersk%'
                 OR shippingLine LIKE '%mersk%'
               )`
-        : carrier === 'Evergreen'
-            ? `AND (
+            : carrier === 'Evergreen'
+                ? `AND (
                 shippingLine LIKE '%evergreen%'
                 OR shippingLine LIKE '%shipmentlink%'
               )`
-        : '';
+                : '';
     const dueShipments = await db.query(`SELECT *
      FROM Shipment
      WHERE isActive = 1
