@@ -526,7 +526,6 @@ export function parseMaerskDcsaTracking(data, url, reference = '') {
 }
 export async function fetchMaerskTracking(shipment, url) {
     const queries = dcsaTrackingQueriesForShipment(shipment);
-    console.log("queries", queries)
     let lastResult = null;
     let lastError = null;
     for (const candidate of queries) {
@@ -538,7 +537,6 @@ export async function fetchMaerskTracking(shipment, url) {
             lastResult = result;
         }
         catch (error) {
-            console.log("error", error)
             lastError = error;
             if (error instanceof MaerskApiError && ![404].includes(error.status))
                 throw error;
@@ -803,7 +801,6 @@ export async function fetchMscTracking(trackingNumber, url) {
 export async function scrapeMaerskTrackingPage(url) {
     const reference = referenceFromTrackingUrl(url);
     const browser = await playwrightChromium.launch(await maerskBrowserOptions());
-    console.log("browser", browser)
     try {
         const context = await browser.newContext({
             userAgent: MAERSK_USER_AGENT,
@@ -859,11 +856,9 @@ export async function ensureShipmentTrackingColumns() {
     }
 }
 export async function fetchCarrierTracking(shipment, options = {}) {
-    console.log("log1", shipment)
     const carrier = trackingCarrierLabel(shipment.shippingLine);
     const trackingReference = carrier ? trackingReferenceForShipment(shipment, carrier) : null;
     const url = trackingUrlForShipment(shipment);
-    console.log("log2", carrier, trackingReference, url)
     if (!carrier) {
         return {
             status: statusLabel(shipment.status),
@@ -905,7 +900,6 @@ export async function fetchCarrierTracking(shipment, options = {}) {
             return await scrapeMaerskTrackingPage(url);
         }
         catch (error) {
-            console.log("error", error)
             const message = String(error?.message || error);
             return {
                 status: statusLabel(shipment.status),
@@ -918,7 +912,6 @@ export async function fetchCarrierTracking(shipment, options = {}) {
             };
         }
     }
-    if (carrier === 'MSC' && url) {
         try {
             return await fetchMscTracking(trackingReference, url);
         }
@@ -979,7 +972,6 @@ export async function syncShipmentTracking(id, force = false) {
         return shipment;
     }
     const result = await fetchCarrierTracking(shipment);
-    console.log("log3", result)
     if (result.status === 'No results found' &&
         shipment.carrierTrackingRawDetails &&
         shipment.carrierTrackingStatus &&
