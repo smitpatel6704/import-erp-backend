@@ -53,8 +53,11 @@ const publicUser = (user) => ({
 const maskEmail = (value) => {
   const [name = '', domain = ''] = String(value || '').split('@');
   if (!name || !domain) return 'your email';
-  const visible = name.length <= 2 ? name[0] : `${name[0]}${name[name.length - 1]}`;
-  return `${visible.padEnd(Math.min(name.length, 4), '*')}@${domain}`;
+  if (name.length <= 2) return `${name[0]}*@${domain}`;
+  if (name.length <= 4) return `${name.slice(0, 2)}${'*'.repeat(name.length - 2)}@${domain}`;
+  const visibleStart = name.slice(0, 2);
+  const visibleEnd = name.slice(-2);
+  return `${visibleStart}${'*'.repeat(Math.max(name.length - 4, 3))}${visibleEnd}@${domain}`;
 };
 
 const sendLoginOtpEmail = (user, code) => sendEmail({
@@ -257,7 +260,15 @@ router.post('/setup-password', async (req, res) => {
       details: `Password setup completed for ${updated.email}`,
       ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
     });
-    return res.json({ data: { token: createSessionToken(updated), user: publicUser(updated) } });
+    return res.json({
+      data: {
+        passwordSet: true,
+        user: {
+          email: updated.email,
+          name: updated.name,
+        },
+      },
+    });
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     return res.status(500).json({ error: String(error) });

@@ -46,7 +46,11 @@ const detailForActivity = ({ action, entity, body, path }) => {
   const value = displayValue(data);
   const actionLabel = action === 'create' ? 'Created' : action === 'update' ? 'Updated' : 'Deleted';
   const entityLabel = labelForEntity(entity);
-  return `${actionLabel} ${entityLabel}${value ? ` ${value}` : ''}${path ? ` via ${path}` : ''}`;
+  if (entity === 'user' && action === 'create')
+    return `Invited user${value ? ` ${value}` : ''}`;
+  if (entity === 'user_invitation' && action === 'create')
+    return `Resent invitation${value ? ` to ${value}` : ''}`;
+  return `${actionLabel} ${entityLabel}${value ? ` ${value}` : ''}`;
 };
 
 export const recordActivity = async ({
