@@ -822,10 +822,9 @@ export async function scrapeMaerskTrackingPage(url) {
         });
 
         try {
-            await page.getByRole('button', { name: /allow all/i }).click({ timeout: 8000 });
+            await page.getByRole('button', { name: /allow all/i }).click({ timeout: 200000 });
         }
-        catch(error) {
-            console.log("error", error)
+        catch {
             // Cookie banner is not always shown.
         }
 
