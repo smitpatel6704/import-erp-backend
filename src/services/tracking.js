@@ -134,7 +134,7 @@ const deploymentRuntimeLabel = () => process.env.VERCEL ? 'Vercel serverless' : 
 const maerskScraperHeadless = () => isServerless() || process.env.MAERSK_SCRAPER_HEADLESS === 'true';
 export const maerskScraperMode = () => (maerskScraperHeadless() ? 'headless' : 'visible');
 const maerskBrowserOptions = async () => {
-    if (isServerless() || process.platform === 'linux') {
+    if (isServerless()) {
         const { default: serverlessChromium } = await import('@sparticuz/chromium');
         return {
             headless: true,
@@ -149,8 +149,7 @@ const maerskBrowserOptions = async () => {
         };
     }
     return {
-        headless: maerskScraperHeadless(),
-        channel: 'chrome',
+        headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
     };
 };
@@ -612,7 +611,7 @@ function parseMaerskRenderedText(rawText, url, reference = '') {
         event.vessel,
         event.dateText,
     ].filter(Boolean).join(' - '));
-    const hasShipmentData = Boolean(billOfLading || origin || destination || containerNumber || etaText || latestEvent || events.length);
+    const hasShipmentData = Boolean(origin || destination || containerNumber || etaText || latestEvent || events.length);
     return {
         status: latestEvent || status,
         location: destination || null,
@@ -815,7 +814,11 @@ export async function scrapeMaerskTrackingPage(url) {
 
         await page.waitForFunction(() => {
             const text = document.body.innerText;
-            return text.includes('Bill of Lading number') || text.includes('No results found');
+            const hasShipmentData = text.includes('Latest event') ||
+                text.includes('Estimated arrival date') ||
+                text.includes('Last updated') ||
+                /[A-Z]{4}\d{7}\s*\|/.test(text);
+            return hasShipmentData || text.includes('No results found') || text.includes("couldn't find");
         }, { timeout: 90000 });
         await page.waitForTimeout(3000);
 
