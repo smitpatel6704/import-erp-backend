@@ -526,6 +526,7 @@ export function parseMaerskDcsaTracking(data, url, reference = '') {
 }
 export async function fetchMaerskTracking(shipment, url) {
     const queries = dcsaTrackingQueriesForShipment(shipment);
+    console.log("queries", queries)
     let lastResult = null;
     let lastError = null;
     for (const candidate of queries) {
@@ -537,6 +538,7 @@ export async function fetchMaerskTracking(shipment, url) {
             lastResult = result;
         }
         catch (error) {
+            console.log("error", error)
             lastError = error;
             if (error instanceof MaerskApiError && ![404].includes(error.status))
                 throw error;
@@ -902,6 +904,7 @@ export async function fetchCarrierTracking(shipment, options = {}) {
             return await scrapeMaerskTrackingPage(url);
         }
         catch (error) {
+            console.log("error", error)
             const message = String(error?.message || error);
             return {
                 status: statusLabel(shipment.status),
