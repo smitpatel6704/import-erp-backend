@@ -203,6 +203,9 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
         args: [
             ...additionalArgs,
             '--disable-blink-features=AutomationControlled',
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage'
         ],
     });
 
