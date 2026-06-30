@@ -1,5 +1,9 @@
 import { db } from '../db.js';
 import { Router } from 'express';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createId } from '@paralleldrive/cuid2';
 import { createNotification, notificationRecipients } from '../services/notifications.js';
 import {
@@ -8,6 +12,16 @@ import {
     trackingCarrierLabel,
 } from '../services/tracking.js';
 const router = Router();
+const execFileAsync = promisify(execFile);
+const merskScriptPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../mersk.js');
+
+const lookupMerskTracking = async (trackingNumber) => {
+    const { stdout } = await execFileAsync(process.execPath, [merskScriptPath, trackingNumber], {
+        timeout: 180000,
+        maxBuffer: 1024 * 1024 * 5,
+    });
+    return JSON.parse(stdout);
+};
 // GET /api/shipments/notification-users
 router.get('/notification-users', async (_req, res) => {
     try {
@@ -31,8 +45,13 @@ router.post('/tracking/lookup', async (req, res) => {
         const shippingLine = String(req.body.shippingLine || '').trim();
         if (!trackingNumber || !shippingLine)
             return res.status(400).json({ error: 'Tracking number and shipping line are required' });
-        if (!trackingCarrierLabel(shippingLine))
+        const carrier = trackingCarrierLabel(shippingLine);
+        if (!carrier)
             return res.status(400).json({ error: 'Only Maersk, MSC, and Evergreen tracking are supported' });
+        if (carrier === 'Maersk') {
+            const result = await lookupMerskTracking(trackingNumber);
+            return res.json({ data: result });
+        }
         const result = await fetchCarrierTracking({
             id: 'lookup',
             trackingNumber,
