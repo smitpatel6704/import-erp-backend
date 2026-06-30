@@ -5,16 +5,6 @@ EN
 Notifications
 one
 Support
-Contact Us
-Prices
-Book
-Schedules
-Tracking
-Manage
-Services
-Company
-Register
-Login
 Shipment & Container Tracking
 
 Select your booking type from Ocean, Air, Less-than-container-load (LCL) or Parcel and enter your tracking number to view full tracking details.
