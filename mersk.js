@@ -40,10 +40,17 @@ try {
   } catch {}
 
   await page.waitForFunction(
-    () => {
+    (expectedTrackingNo) => {
       const text = document.body.innerText;
-      return text.includes('Bill of Lading number') || text.includes('No results found');
+      return (
+        text.includes('No results found') ||
+        (text.includes(expectedTrackingNo) &&
+          text.includes('From') &&
+          text.includes('To') &&
+          /[A-Z]{4}\d{7}/.test(text))
+      );
     },
+    trackingNo,
     { timeout: 90000 }
   );
 
@@ -72,7 +79,7 @@ try {
   const flatText = text.replace(/\s+/g, ' ').trim();
   const getMatch = (regex) => (flatText.match(regex)?.[1] || '').trim();
 
-  const billOfLading = getMatch(/Bill of Lading number\s+([A-Z0-9]+)/i);
+  const billOfLading = getMatch(/Bill of Lading number\s+([A-Z0-9]{9})\s+From/i);
   const originPort = getMatch(/From\s+([^\s]+)\s+To/i);
   const destinationPort = getMatch(/To\s+([^\s]+)\s+(?:[A-Z]{4}\d{7}|Last updated)/i);
   const containerNumber = getMatch(/([A-Z]{4}\d{7})\s*\|/i);
