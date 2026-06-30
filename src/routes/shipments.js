@@ -17,7 +17,7 @@ const merskScriptPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../
 
 const lookupMerskTracking = async (trackingNumber) => {
     const { stdout } = await execFileAsync(process.execPath, [merskScriptPath, trackingNumber], {
-        timeout: 180000,
+        timeout: 280000,
         maxBuffer: 1024 * 1024 * 5,
     });
     return JSON.parse(stdout);
