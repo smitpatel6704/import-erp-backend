@@ -4,7 +4,7 @@ import { chromium } from 'playwright';
 const trackingNo = process.argv[2] || '269868191';
 
 const browser = await chromium.launch({
-  headless: false, // Render/server: true
+  headless: true, // Render/server: true
   channel: 'chrome',
   args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
 });
@@ -31,7 +31,7 @@ const formatDateForInput = (dateText = '') => {
 
 try {
   await page.goto(`https://www.maersk.com/tracking/${trackingNo}`, {
-    waitUntil: 'networkidle',
+    waitUntil: 'domcontentloaded',
     timeout: 120000
   });
 
