@@ -2,6 +2,26 @@ import { db } from '../db.js';
 import { Router } from 'express';
 import { createId } from '@paralleldrive/cuid2';
 const router = Router();
+
+const shipmentActionLabel = (action) => {
+    if (action === 'create')
+        return 'Created Shipment';
+    if (action === 'update')
+        return 'Updated Shipment';
+    if (action === 'delete')
+        return 'Deleted Shipment';
+    return 'Shipment';
+};
+
+const buildShipmentDetails = (activity, shipment) => {
+    if (!shipment)
+        return activity.details;
+    const names = [shipment.importerName, shipment.exporterName].filter(Boolean);
+    const nameText = names.length ? ` (${names.join(' -> ')})` : '';
+    const shipmentNumber = shipment.shipmentNumber || shipment.blNumber || activity.entityId;
+    return `${shipmentActionLabel(activity.action)}${shipmentNumber ? ` ${shipmentNumber}` : ''}${nameText}`;
+};
+
 // GET /api/activities - List activity logs with filtering, sorting, pagination
 router.get('/', async (req, res) => {
     try {
@@ -54,8 +74,30 @@ router.get('/', async (req, res) => {
       ORDER BY a.${allowedSort} ${allowedDir} 
       LIMIT ? OFFSET ?
     `, queryParams);
+        const shipmentIds = [...new Set(activities
+            .filter((activity) => activity.entity === 'shipment' && activity.entityId)
+            .map((activity) => activity.entityId))];
+        const shipmentById = new Map();
+        if (shipmentIds.length) {
+            const shipmentRows = await db.query(`
+              SELECT
+                s.id,
+                s.shipmentNumber,
+                s.blNumber,
+                c.name AS importerName,
+                e.name AS exporterName
+              FROM Shipment s
+              LEFT JOIN Company c ON s.companyId = c.id
+              LEFT JOIN ExporterCompany e ON s.exporterCompanyId = e.id
+              WHERE s.id IN (${shipmentIds.map(() => '?').join(',')})
+            `, shipmentIds);
+            shipmentRows.forEach((shipment) => shipmentById.set(shipment.id, shipment));
+        }
         const formattedActivities = activities.map((a) => ({
             ...a,
+            details: a.entity === 'shipment'
+                ? buildShipmentDetails(a, shipmentById.get(a.entityId))
+                : a.details,
             user: a.userId ? { id: a.userId, name: a.userName, avatar: a.userAvatar, role: a.userRole } : null,
             userName: undefined,
             userAvatar: undefined,

@@ -15,6 +15,85 @@ const router = Router();
 const execFileAsync = promisify(execFile);
 const merskScriptPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../mersk.js');
 
+const normalizeInvoiceNumber = (value) => String(value || '').trim();
+
+const upsertShipmentInvoice = async (shipmentId, body) => {
+    const invoiceNumber = normalizeInvoiceNumber(body.invoiceNumber);
+    if (!invoiceNumber)
+        return null;
+    const [duplicateInvoice] = await db.query(`
+      SELECT id, shipmentId FROM Invoice
+      WHERE invoiceNumber = ? AND isActive = 1 AND (shipmentId IS NULL OR shipmentId <> ?)
+    `, [invoiceNumber, shipmentId]);
+    if (duplicateInvoice) {
+        const error = new Error(`Invoice number already exists`);
+        error.status = 409;
+        throw error;
+    }
+    const [existingInvoice] = await db.query(`
+      SELECT id FROM Invoice
+      WHERE shipmentId = ? AND isActive = 1
+      ORDER BY createdAt DESC
+      LIMIT 1
+    `, [shipmentId]);
+    const values = [
+        invoiceNumber,
+        body.currency || 'USD',
+        body.shipmentValue || 0,
+        body.companyId || null,
+        body.notes || null,
+        new Date(),
+    ];
+    if (existingInvoice) {
+        await db.execute(`
+          UPDATE Invoice
+          SET invoiceNumber = ?, currency = ?, totalAmount = ?, companyId = ?, notes = ?, updatedAt = ?
+          WHERE id = ?
+        `, [...values, existingInvoice.id]);
+        return existingInvoice.id;
+    }
+    const invoiceId = createId();
+    await db.execute(`
+      INSERT INTO Invoice (
+        id, invoiceNumber, invoiceType, status, issueDate, subtotal, taxAmount,
+        totalAmount, currency, paidAmount, companyId, shipmentId, notes,
+        isActive, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+        invoiceId, invoiceNumber, 'commercial', 'draft', new Date(), 0, 0,
+        body.shipmentValue || 0, body.currency || 'USD', 0, body.companyId || null,
+        shipmentId, body.notes || null, 1, new Date(), new Date()
+    ]);
+    return invoiceId;
+};
+
+const syncShipmentRequiredDocuments = async (shipmentId, checklistIds) => {
+    if (!Array.isArray(checklistIds))
+        return;
+    const nextIds = [...new Set(checklistIds.map((id) => String(id || '').trim()).filter(Boolean))];
+    const existingRows = await db.query('SELECT id, checklistId FROM ShipmentDocument WHERE shipmentId = ?', [shipmentId]);
+    const existingIds = existingRows.map((row) => row.checklistId);
+    const nextIdSet = new Set(nextIds);
+    const existingIdSet = new Set(existingIds);
+    const removeRows = existingRows.filter((row) => !nextIdSet.has(row.checklistId));
+    if (removeRows.length) {
+        const placeholders = removeRows.map(() => '?').join(',');
+        await db.execute(`DELETE FROM ShipmentDocument WHERE shipmentId = ? AND checklistId IN (${placeholders})`, [
+            shipmentId,
+            ...removeRows.map((row) => row.checklistId),
+        ]);
+    }
+    for (const checklistId of nextIds) {
+        if (existingIdSet.has(checklistId))
+            continue;
+        await db.execute(`
+          INSERT INTO ShipmentDocument (
+            id, shipmentId, checklistId, status, createdAt, updatedAt
+          ) VALUES (?, ?, ?, 'pending', ?, ?)
+        `, [createId(), shipmentId, checklistId, new Date(), new Date()]);
+    }
+};
+
 const lookupMerskTracking = async (trackingNumber) => {
     const { stdout } = await execFileAsync(process.execPath, [merskScriptPath, trackingNumber], {
         timeout: 280000,
@@ -166,6 +245,8 @@ router.put('/:id', async (req, res) => {
             values.push(id);
             await db.execute(`UPDATE Shipment SET ${updates.join(', ')} WHERE id = ?`, values);
         }
+        await upsertShipmentInvoice(id, body);
+        await syncShipmentRequiredDocuments(id, body.requiredDocumentIds);
         const updatedShipments = await db.query('SELECT * FROM Shipment WHERE id = ?', [id]);
         const shipment = updatedShipments[0];
         if (shipment && shipment.companyId) {
@@ -210,7 +291,7 @@ router.put('/:id', async (req, res) => {
     }
     catch (error) {
         console.error('Shipment PUT error:', error);
-        return res.status(500).json({ error: String(error) });
+        return res.status(error.status || 500).json({ error: error.message || String(error) });
     }
 });
 // DELETE /api/shipments/[id]
@@ -396,6 +477,7 @@ router.post('/', async (req, res) => {
                 id, 1, new Date(), new Date()
             ]);
         }
+        await upsertShipmentInvoice(id, body);
         for (const item of body.shipmentItems || body.items || []) {
             await db.execute(`
               INSERT INTO ShipmentItem (
@@ -441,7 +523,7 @@ router.post('/', async (req, res) => {
     }
     catch (error) {
         console.error('Shipments POST error:', error);
-        return res.status(500).json({ error: String(error) });
+        return res.status(error.status || 500).json({ error: error.message || String(error) });
     }
 });
 export default router;

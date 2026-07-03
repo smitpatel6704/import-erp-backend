@@ -21,6 +21,28 @@ const safeDownloadName = (value, fallback = 'shipment-documents.pdf') => {
         .trim() || fallback;
     return name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`;
 };
+const fileNamePart = (value, fallback = '') => {
+    const part = String(value || fallback)
+        .trim()
+        .replace(/[^a-zA-Z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+    return part || fallback;
+};
+const buildMergedDocumentName = async (shipmentId, orderedDocuments) => {
+    const [shipment] = await db.query('SELECT shipmentNumber, blNumber FROM Shipment WHERE id = ?', [shipmentId]);
+    const [invoice] = await db.query(`
+      SELECT invoiceNumber FROM Invoice
+      WHERE shipmentId = ? AND isActive = 1
+      ORDER BY createdAt DESC
+      LIMIT 1
+    `, [shipmentId]);
+    const parts = [
+        fileNamePart(invoice?.invoiceNumber, 'invoice'),
+        fileNamePart(shipment?.blNumber || shipment?.shipmentNumber, 'bl'),
+        ...orderedDocuments.map((document) => fileNamePart(document.checklistName || document.name || 'document')),
+    ].filter(Boolean);
+    return `${parts.join('_')}.pdf`;
+};
 // Configure Multer for local storage
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -101,10 +123,13 @@ router.post('/shipment/:id/merge', async (req, res) => {
             return res.status(400).json({ error: 'documentIds in the required merge order are required' });
         const placeholders = documentIds.map(() => '?').join(',');
         const rows = await db.query(`
-          SELECT id, fileUrl, fileType FROM ShipmentDocument
-          WHERE shipmentId = ? AND id IN (${placeholders})
+          SELECT sd.id, sd.fileUrl, sd.fileType, dc.name as checklistName
+          FROM ShipmentDocument sd
+          LEFT JOIN DocumentChecklist dc ON sd.checklistId = dc.id
+          WHERE sd.shipmentId = ? AND sd.id IN (${placeholders})
         `, [shipmentId, ...documentIds]);
         const byId = new Map(rows.map((row) => [row.id, row]));
+        const orderedDocuments = documentIds.map((documentId) => byId.get(documentId)).filter(Boolean);
         const merged = await PDFDocument.create();
         for (const documentId of documentIds) {
             const document = byId.get(documentId);
@@ -127,6 +152,7 @@ router.post('/shipment/:id/merge', async (req, res) => {
         const mergedBuffer = Buffer.from(mergedBytes);
         fs.writeFileSync(path.join(uploadDir, filename), mergedBuffer);
         const fileUrl = `/uploads/${filename}`;
+        const downloadName = await buildMergedDocumentName(shipmentId, orderedDocuments);
         await storeDocumentBuffer({
             fileUrl,
             fileName: filename,
@@ -137,7 +163,7 @@ router.post('/shipment/:id/merge', async (req, res) => {
           INSERT INTO DocumentBundle (id, shipmentId, name, fileUrl, documentIds, createdBy, createdAt)
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `, [
-            bundleId, shipmentId, req.body.name || 'Merged shipment documents',
+            bundleId, shipmentId, downloadName,
             fileUrl, JSON.stringify(documentIds), req.body.createdBy || null, new Date()
         ]);
         return res.status(201).json({
@@ -147,7 +173,7 @@ router.post('/shipment/:id/merge', async (req, res) => {
                 fileUrl,
                 documentIds,
                 downloadUrl: `/api/shipment-documents/bundles/${bundleId}/download`,
-                fileName: safeDownloadName(req.body.name || 'Merged shipment documents'),
+                fileName: safeDownloadName(downloadName),
             }
         });
     }
