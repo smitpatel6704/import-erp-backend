@@ -95,6 +95,10 @@ const syncShipmentRequiredDocuments = async (shipmentId, checklistIds) => {
 };
 
 const lookupMerskTracking = async (trackingNumber) => {
+    // Validate: alphanumeric + hyphens only to prevent command injection/SSRF
+    if (!/^[A-Za-z0-9-]+$/.test(trackingNumber)) {
+        throw new Error('Invalid tracking number format');
+    }
     const { stdout } = await execFileAsync(process.execPath, [merskScriptPath, trackingNumber], {
         timeout: 280000,
         maxBuffer: 1024 * 1024 * 5,
@@ -126,7 +130,7 @@ router.post('/tracking/lookup', async (req, res) => {
             return res.status(400).json({ error: 'Tracking number and shipping line are required' });
         const carrier = trackingCarrierLabel(shippingLine);
         if (!carrier)
-            return res.status(400).json({ error: 'Only Maersk, MSC, and Evergreen tracking are supported' });
+            return res.status(400).json({ error: 'Only Maersk, MSC, Evergreen, and Hapag-Lloyd tracking are supported' });
         if (carrier === 'Maersk') {
             const result = await lookupMerskTracking(trackingNumber);
             return res.json({ data: result });

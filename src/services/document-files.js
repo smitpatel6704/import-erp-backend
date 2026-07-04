@@ -57,6 +57,9 @@ export async function readStoredDocumentFile(fileUrl) {
 
 export async function readDocumentFileBuffer(fileUrl) {
   const relativePath = String(fileUrl || '').replace(/^\/+/, '');
+  if (relativePath.includes('..')) {
+    throw new Error('Invalid file path');
+  }
   const filePath = path.resolve(process.cwd(), relativePath);
   const uploadsRoot = path.resolve(process.cwd(), 'uploads');
   if (filePath.startsWith(`${uploadsRoot}${path.sep}`) && fs.existsSync(filePath)) {
@@ -77,8 +80,8 @@ export async function sendStoredDocumentFile(req, res, next) {
       return next();
     res.setHeader('Content-Type', file.fileType || 'application/octet-stream');
     res.setHeader('Content-Length', String(file.fileSize || file.fileData.length));
-    res.setHeader('Content-Disposition', `inline; filename="${file.fileName || filename}"`);
-    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('Content-Disposition', `attachment; filename="${file.fileName || filename}"`);
+    res.setHeader('Cache-Control', 'no-store');
     return res.send(file.fileData);
   }
   catch (error) {

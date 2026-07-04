@@ -4,14 +4,25 @@ import { db } from '../db.js';
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 const isProduction = () => process.env.NODE_ENV === 'production' || process.env.VERCEL;
 const secret = () => {
-  const value = process.env.AUTH_SECRET || (!isProduction() ? process.env.CRON_SECRET : '');
-  if (value && value !== 'replace-with-a-long-random-secret') return value;
-  if (isProduction()) throw new Error('AUTH_SECRET must be configured in production');
-  return 'nexport-local-development-secret';
+  const value = process.env.AUTH_SECRET;
+  if (!value || value === 'replace-with-a-long-random-secret') {
+    if (isProduction()) throw new Error('AUTH_SECRET must be configured in production');
+    console.warn('WARNING: Using weak development secret. Set AUTH_SECRET in production.');
+  }
+  return value || process.env.CRON_SECRET || 'nexport-local-development-secret';
 };
 
 const encode = (value) => Buffer.from(value).toString('base64url');
 const sign = (value) => createHmac('sha256', secret()).update(value).digest('base64url');
+
+export const validatePasswordStrength = (password) => {
+  if (password.length < 10) return 'Password must be at least 10 characters';
+  if (!/[A-Z]/.test(password)) return 'Password must contain an uppercase letter';
+  if (!/[a-z]/.test(password)) return 'Password must contain a lowercase letter';
+  if (!/[0-9]/.test(password)) return 'Password must contain a number';
+  if (!/[^A-Za-z0-9]/.test(password)) return 'Password must contain a special character';
+  return null;
+};
 
 export const hashPassword = (password) => {
   const salt = randomBytes(16).toString('hex');
@@ -29,14 +40,19 @@ export const verifyPassword = (password, storedHash) => {
 export const createSessionToken = (user) => {
   const payload = encode(JSON.stringify({
     sub: user.id,
+    ver: user.tokenVersion || 0,
     exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,
   }));
   return `${payload}.${sign(payload)}`;
 };
 
-export const createPendingOtpToken = (user) => {
+export const hashIp = (ipStr) => createHmac('sha256', secret()).update(ipStr).digest('hex');
+
+export const createPendingOtpToken = (user, req) => {
+  const fingerprint = req ? hashIp(req.ip + (req.headers['user-agent'] || '')) : null;
   const payload = encode(JSON.stringify({
     sub: user.id,
+    fp: fingerprint,
     purpose: 'otp_login',
     exp: Math.floor(Date.now() / 1000) + 5 * 60,
   }));
@@ -59,9 +75,11 @@ const parseSessionToken = (token) => {
   return parsed;
 };
 
-export const verifyPendingOtpToken = (token) => {
+export const verifyPendingOtpToken = (token, req) => {
   const parsed = parseSessionToken(token);
   if (!parsed || parsed.purpose !== 'otp_login')
+    return null;
+  if (parsed.fp && req && parsed.fp !== hashIp(req.ip + (req.headers['user-agent'] || '')))
     return null;
   return parsed;
 };
@@ -113,13 +131,21 @@ export const canPerformAction = (user, module, action) => {
 export async function authenticate(req, res, next) {
   try {
     const header = req.headers.authorization || '';
-    const parsed = parseSessionToken(header.startsWith('Bearer ') ? header.slice(7) : '');
+    const tokenStr = header.startsWith('Bearer ') ? header.slice(7) : '';
+    const parsed = parseSessionToken(tokenStr);
     if (!parsed) return res.status(401).json({ error: 'Authentication required' });
     const [user] = await db.query(`
-      SELECT id, email, name, avatar, role, department, phone, permissions, isActive
+      SELECT id, email, name, avatar, role, department, phone, permissions, isActive, tokenVersion
       FROM User WHERE id = ?
     `, [parsed.sub]);
+    
     if (!user || !user.isActive) return res.status(401).json({ error: 'Account is inactive or unavailable' });
+    
+    // Verify token version
+    if (parsed.ver !== undefined && parsed.ver !== user.tokenVersion) {
+      return res.status(401).json({ error: 'Session expired. Please sign in again.' });
+    }
+
     req.user = user;
     return next();
   } catch (error) {

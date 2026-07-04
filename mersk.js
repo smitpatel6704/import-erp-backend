@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-core';
 
 const trackingNo = process.argv[2] || '269868191';
 

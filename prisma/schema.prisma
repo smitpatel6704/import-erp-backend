@@ -23,6 +23,7 @@ model User {
   phone         String?
   permissions   Json           @default("[]")
   isActive      Boolean        @default(true)
+  tokenVersion  Int            @default(0)
   lastLoginAt   DateTime?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
@@ -400,6 +401,13 @@ model SettingOption {
   label     String    @db.VarChar(100)
   isActive  Boolean?  @default(true)
   createdAt DateTime? @default(now())
+}
+
+model AppSetting {
+  key       String    @id
+  value     String    @db.Text
+  updatedBy String?
+  updatedAt DateTime? @default(now())
 }
 
 model DocumentChecklist {

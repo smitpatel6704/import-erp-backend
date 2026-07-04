@@ -8,6 +8,7 @@ import {
     scrapeMaerskPublicTracking,
 } from './maersk.js';
 import { evergreenTrackingUrl, fetchEvergreenTracking } from './evergreen.js';
+import { fetchHapagTracking } from './hapag.js';
 const TRACKING_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MSC_TRACKING_PAGE = 'https://www.msc.com/en/track-a-shipment';
 const MSC_TRACKING_API = 'https://www.msc.com/api/feature/tools/TrackingInfo';
@@ -32,6 +33,8 @@ export const trackingCarrierLabel = (shippingLine) => {
         return 'MSC';
     if (line.includes('evergreen') || line.includes('shipmentlink'))
         return 'Evergreen';
+    if (line.includes('hapag') || line.includes('hlag'))
+        return 'Hapag-Lloyd';
     return null;
 };
 const normalizeTrackingReference = (value) => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -81,6 +84,8 @@ export const trackingUrlForShipment = (shipment) => {
         return `https://www.msc.com/track-a-shipment?trackingNumber=${encodedTrackingReference}`;
     if (carrier === 'Evergreen')
         return evergreenTrackingUrl();
+    if (carrier === 'Hapag-Lloyd')
+        return `https://www.hapag-lloyd.com/en/online-business/track/track-by-booking-solution.html?blno=${encodedTrackingReference}`;
     return null;
 };
 const statusLabel = (status) => status
@@ -935,6 +940,23 @@ export async function fetchCarrierTracking(shipment, options = {}) {
                 lastEvent: `Evergreen tracking failed: ${message}`,
                 rawDetails: error?.stack || message,
                 error: 'Evergreen tracking failed',
+                url,
+            };
+        }
+    }
+    if (carrier === 'Hapag-Lloyd' && trackingReference) {
+        try {
+            return await fetchHapagTracking(trackingReference);
+        }
+        catch (error) {
+            const message = String(error?.message || error);
+            return {
+                status: statusLabel(shipment.status),
+                location: shipment.destinationPort,
+                eta: shipment.eta ? new Date(shipment.eta) : null,
+                lastEvent: `Hapag-Lloyd tracking failed: ${message}`,
+                rawDetails: error?.stack || message,
+                error: 'Hapag-Lloyd tracking failed',
                 url,
             };
         }

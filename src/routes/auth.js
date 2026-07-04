@@ -10,6 +10,7 @@ import {
   hashInvitationToken,
   hashPassword,
   normalizePermissions,
+  validatePasswordStrength,
   verifyPendingOtpToken,
   verifyPassword,
 } from '../services/auth.js';
@@ -18,13 +19,13 @@ import { sendEmail } from '../services/email.js';
 
 const router = Router();
 const authAttempts = new Map();
-const otpExemptAdminEmails = new Set(['smitpatidar15@gmail.com']);
 const rateLimitAuth = (name, identifierForRequest) => (req, res, next) => {
   const windowMs = 15 * 60 * 1000;
   const maxAttempts = 8;
   const now = Date.now();
   const identifier = identifierForRequest(req);
-  const key = `${name}:${req.ip || req.headers['x-forwarded-for'] || 'unknown'}:${identifier}`;
+  const clientIp = String(req.headers['x-forwarded-for'] || req.ip || req.socket?.remoteAddress || 'unknown').split(',')[0].trim();
+  const key = `${name}:${clientIp}:${identifier}`;
   const current = authAttempts.get(key);
   if (!current || current.resetAt <= now) {
     authAttempts.set(key, { count: 1, resetAt: now + windowMs });
@@ -74,28 +75,41 @@ const sendLoginOtpEmail = (user, code) => sendEmail({
   `,
 });
 
+const sendPasswordChangeOtpEmail = (user, code) => sendEmail({
+  to: user.email,
+  subject: 'Your Nexport ERP password change OTP',
+  text: `Your Nexport ERP password change OTP is ${code}. It expires in 5 minutes.`,
+  html: `
+    <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111827">
+      <h2 style="margin:0 0 12px">Nexport ERP password change OTP</h2>
+      <p>Use this code to confirm your password change:</p>
+      <p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:18px 0">${code}</p>
+      <p>This code expires in 5 minutes. If you did not request it, change your password immediately or contact an administrator.</p>
+    </div>
+  `,
+});
+
 const isSmtpAuthError = (error) => {
   const message = String(error?.message || error?.response || error || '');
   return error?.code === 'EAUTH' ||
     error?.responseCode === 535 ||
     message.includes('Username and Password not accepted');
 };
-const isOtpExemptAdmin = (user) =>
-  otpExemptAdminEmails.has(String(user?.email || '').toLowerCase()) &&
-  ['admin', 'super_admin'].includes(user?.role);
-
 router.get('/status', async (_req, res) => {
   const [{ count }] = await db.query('SELECT COUNT(*) as count FROM User');
   return res.json({ data: { needsBootstrap: Number(count) === 0 } });
 });
 
-router.post('/bootstrap', async (req, res) => {
+router.post('/bootstrap', rateLimitAuth('bootstrap', (req) => String(req.body.email || '').trim().toLowerCase()), async (req, res) => {
   try {
     const [{ count }] = await db.query('SELECT COUNT(*) as count FROM User');
     if (Number(count) > 0) return res.status(409).json({ error: 'Administrator already exists' });
     const { name, email, password } = req.body;
-    if (!name || !email || !password || password.length < 8)
-      return res.status(400).json({ error: 'Name, email and a password of at least 8 characters are required' });
+    if (!name || !email || !password)
+      return res.status(400).json({ error: 'Name, email and password are required' });
+    const passwordError = validatePasswordStrength(String(password));
+    if (passwordError)
+      return res.status(400).json({ error: passwordError });
     const id = createId();
     await db.execute(`
       INSERT INTO User (
@@ -123,19 +137,6 @@ router.post('/login', rateLimitAuth('login', (req) => String(req.body.email || '
     const [user] = await db.query('SELECT * FROM User WHERE email = ?', [email]);
     if (!user || !user.isActive || !verifyPassword(req.body.password, user.password))
       return res.status(401).json({ error: 'Invalid email or password' });
-    if (isOtpExemptAdmin(user)) {
-      const now = new Date();
-      await db.execute('UPDATE User SET lastLoginAt = ?, updatedAt = ? WHERE id = ?', [now, now, user.id]);
-      await recordActivity({
-        userId: user.id,
-        action: 'login',
-        entity: 'user',
-        entityId: user.id,
-        details: `Logged in without email OTP as ${user.email}`,
-        ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
-      });
-      return res.json({ data: { token: createSessionToken(user), user: publicUser(user) } });
-    }
     const code = createOtpCode();
     const otpId = createId();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
@@ -147,7 +148,7 @@ router.post('/login', rateLimitAuth('login', (req) => String(req.body.email || '
     return res.json({
       data: {
         otpRequired: true,
-        otpToken: createPendingOtpToken(user),
+        otpToken: createPendingOtpToken(user, req),
         maskedEmail: maskEmail(user.email),
       },
     });
@@ -168,7 +169,7 @@ router.post('/login', rateLimitAuth('login', (req) => String(req.body.email || '
 
 router.post('/verify-email-otp', rateLimitAuth('otp', (req) => String(req.body.otpToken || '').slice(0, 32)), async (req, res) => {
   try {
-    const pending = verifyPendingOtpToken(String(req.body.otpToken || ''));
+    const pending = verifyPendingOtpToken(String(req.body.otpToken || ''), req);
     const code = String(req.body.code || '').trim();
     if (!pending?.sub)
       return res.status(401).json({ error: 'Password verification expired. Please sign in again.' });
@@ -207,7 +208,7 @@ router.post('/verify-email-otp', rateLimitAuth('otp', (req) => String(req.body.o
   }
 });
 
-router.get('/invitation', async (req, res) => {
+router.get('/invitation', rateLimitAuth('invitation', (req) => String(req.query.token || '').slice(0, 32)), async (req, res) => {
   try {
     const hash = hashInvitationToken(req.query.token);
     const { rows: [user] } = await pool.query(`
@@ -224,11 +225,12 @@ router.get('/invitation', async (req, res) => {
   }
 });
 
-router.post('/setup-password', async (req, res) => {
+router.post('/setup-password', rateLimitAuth('setup-password', (req) => String(req.body.token || '').slice(0, 32)), async (req, res) => {
   const client = await pool.connect();
   try {
-    if (!req.body.password || req.body.password.length < 8)
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    const passwordError = validatePasswordStrength(String(req.body.password || ''));
+    if (passwordError)
+      return res.status(400).json({ error: passwordError });
     const hash = hashInvitationToken(req.body.token);
     await client.query('BEGIN');
     const { rows: [user] } = await client.query(`
@@ -278,5 +280,147 @@ router.post('/setup-password', async (req, res) => {
 });
 
 router.get('/me', authenticate, (req, res) => res.json({ data: publicUser(req.user) }));
+
+router.put('/me', authenticate, async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const phone = req.body.phone === undefined ? req.user.phone : String(req.body.phone || '').trim();
+    const department = req.body.department === undefined ? req.user.department : String(req.body.department || '').trim();
+    const avatar = req.body.avatar === undefined ? req.user.avatar : String(req.body.avatar || '').trim();
+
+    if (!name || !email)
+      return res.status(400).json({ error: 'Name and email are required' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      return res.status(400).json({ error: 'Enter a valid email address' });
+
+    const [existing] = await db.query('SELECT id FROM User WHERE email = ? AND id <> ?', [email, req.user.id]);
+    if (existing)
+      return res.status(409).json({ error: 'A user with this email already exists' });
+
+    const now = new Date();
+    await db.execute(`
+      UPDATE User
+      SET name = ?, email = ?, phone = ?, department = ?, avatar = ?, updatedAt = ?
+      WHERE id = ?
+    `, [
+      name,
+      email,
+      phone || null,
+      department || null,
+      avatar || null,
+      now,
+      req.user.id,
+    ]);
+
+    const [updated] = await db.query('SELECT * FROM User WHERE id = ?', [req.user.id]);
+    await recordActivity({
+      userId: req.user.id,
+      action: 'update',
+      entity: 'user',
+      entityId: req.user.id,
+      details: `Updated profile for ${updated.email}`,
+      ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
+    });
+
+    return res.json({ data: publicUser(updated) });
+  } catch (error) {
+    return res.status(500).json({ error: String(error) });
+  }
+});
+
+router.post('/password/otp', authenticate, rateLimitAuth('password-otp', (req) => req.user?.email || req.user?.id || 'unknown'), async (req, res) => {
+  try {
+    const currentPassword = String(req.body.currentPassword || '');
+    const newPassword = String(req.body.newPassword || '');
+
+    if (!currentPassword || !newPassword)
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    const passwordError = validatePasswordStrength(newPassword);
+    if (passwordError)
+      return res.status(400).json({ error: passwordError });
+
+    const [user] = await db.query('SELECT * FROM User WHERE id = ?', [req.user.id]);
+    if (!user || !verifyPassword(currentPassword, user.password))
+      return res.status(401).json({ error: 'Current password is incorrect' });
+
+    const code = createOtpCode();
+    const otpId = createId();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    await db.execute(`
+      INSERT INTO LoginOtp (id, userId, codeHash, expiresAt, createdAt)
+      VALUES (?, ?, ?, ?, ?)
+    `, [otpId, user.id, hashOtpCode(code), expiresAt, new Date()]);
+    await sendPasswordChangeOtpEmail(user, code);
+
+    return res.json({ data: { otpSent: true, maskedEmail: maskEmail(user.email) } });
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    if (message.includes('SMTP is not configured'))
+      return res.status(500).json({ error: 'Email OTP is not configured. Set SMTP_USER and SMTP_PASS in backend/.env.' });
+    if (isSmtpAuthError(error)) {
+      console.error('Password OTP SMTP authentication error:', error?.response || error?.message || error);
+      return res.status(500).json({
+        error: 'Gmail rejected the SMTP credentials. Use a Google App Password in SMTP_PASS, not the Gmail account password.',
+      });
+    }
+    console.error('Password OTP error:', error);
+    return res.status(500).json({ error: 'Unable to send password change OTP' });
+  }
+});
+
+router.put('/password', authenticate, async (req, res) => {
+  try {
+    const currentPassword = String(req.body.currentPassword || '');
+    const newPassword = String(req.body.newPassword || '');
+    const otpCode = String(req.body.otpCode || '').trim();
+
+    if (!currentPassword || !newPassword)
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    const passwordError = validatePasswordStrength(newPassword);
+    if (passwordError)
+      return res.status(400).json({ error: passwordError });
+    if (!/^\d{6}$/.test(otpCode))
+      return res.status(400).json({ error: 'Enter the 6 digit OTP from your email' });
+
+    const [user] = await db.query('SELECT * FROM User WHERE id = ?', [req.user.id]);
+    if (!user || !verifyPassword(currentPassword, user.password))
+      return res.status(401).json({ error: 'Current password is incorrect' });
+
+    const [otp] = await db.query(`
+      SELECT *
+      FROM LoginOtp
+      WHERE userId = ?
+        AND codeHash = ?
+        AND consumedAt IS NULL
+        AND expiresAt > ?
+      ORDER BY createdAt DESC
+      LIMIT 1
+    `, [user.id, hashOtpCode(otpCode), new Date()]);
+    if (!otp)
+      return res.status(401).json({ error: 'Invalid or expired OTP' });
+
+    const now = new Date();
+    await db.execute('UPDATE LoginOtp SET consumedAt = ? WHERE id = ?', [now, otp.id]);
+    await db.execute(`
+      UPDATE User
+      SET password = ?, passwordSetAt = ?, updatedAt = ?, tokenVersion = tokenVersion + 1
+      WHERE id = ?
+    `, [hashPassword(newPassword), now, now, user.id]);
+
+    await recordActivity({
+      userId: user.id,
+      action: 'update',
+      entity: 'user',
+      entityId: user.id,
+      details: `Changed password for ${user.email}`,
+      ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
+    });
+
+    return res.json({ data: { success: true } });
+  } catch (error) {
+    return res.status(500).json({ error: String(error) });
+  }
+});
 
 export default router;

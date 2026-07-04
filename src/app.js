@@ -1,9 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-dotenv.config();
-import path from 'path';
-import { fileURLToPath } from 'url';
+dotenv.config({ quiet: true });
 import activitiesRouter from './routes/activities.js';
 import companiesRouter from './routes/companies.js';
 import containersRouter from './routes/containers.js';
@@ -27,9 +25,36 @@ import maerskRouter from './routes/maersk.js';
 import { auditMutation } from './services/audit.js';
 import { authenticate, requireAdmin, requireModulePermission } from './services/auth.js';
 import { sendStoredDocumentFile } from './services/document-files.js';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const app = express();
+const isProduction = () => process.env.NODE_ENV === 'production' || process.env.VERCEL;
+const allowedOrigins = () => new Set(
+    [
+        process.env.APP_URL,
+        process.env.FRONTEND_URL,
+        ...(process.env.CORS_ORIGINS || '').split(','),
+    ]
+        .map((origin) => String(origin || '').trim().replace(/\/$/, ''))
+        .filter(Boolean)
+);
+const apiAttempts = new Map();
+const rateLimit = ({ windowMs, max, keyPrefix }) => (req, res, next) => {
+    const now = Date.now();
+    const ip = String(req.headers['x-forwarded-for'] || req.ip || req.socket?.remoteAddress || 'unknown')
+        .split(',')[0]
+        .trim();
+    const key = `${keyPrefix}:${ip}`;
+    const current = apiAttempts.get(key);
+    if (!current || current.resetAt <= now) {
+        apiAttempts.set(key, { count: 1, resetAt: now + windowMs });
+        return next();
+    }
+    current.count += 1;
+    if (current.count > max) {
+        res.setHeader('Retry-After', String(Math.ceil((current.resetAt - now) / 1000)));
+        return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+    return next();
+};
 
 app.disable('x-powered-by');
 app.use((_req, res, next) => {
@@ -37,12 +62,42 @@ app.use((_req, res, next) => {
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+    res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+    res.setHeader('Content-Security-Policy', 
+      "default-src 'self'; " +
+      "script-src 'self' 'unsafe-inline' https://va.vercel-scripts.com; " +
+      "style-src 'self' 'unsafe-inline'; " +
+      "img-src 'self' data: blob:; " +
+      "connect-src 'self' https://*.supabase.co; " +
+      "font-src 'self' data:; " +
+      "object-src 'self'; " +
+      "base-uri 'self'; " +
+      "form-action 'self';"
+    );
     next();
 });
-app.use(cors());
-app.use(express.json({ limit: '1mb' }));
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
-app.get('/uploads/:filename', sendStoredDocumentFile);
+app.set('trust proxy', 1);
+app.use(cors({
+    origin(origin, callback) {
+        if (!origin)
+            return callback(null, true);
+        const normalizedOrigin = String(origin).replace(/\/$/, '');
+        if (!isProduction())
+            return callback(null, true);
+        if (allowedOrigins().has(normalizedOrigin))
+            return callback(null, true);
+        return callback(new Error('CORS origin is not allowed'));
+    },
+    credentials: false,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type'],
+    maxAge: 600,
+}));
+app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, max: 600, keyPrefix: 'api' }));
+app.use(express.json({ limit: '4mb' }));
+app.get('/uploads/:filename', authenticate, requireModulePermission('documents'), sendStoredDocumentFile);
+app.get('/api/uploads/:filename', authenticate, requireModulePermission('documents'), sendStoredDocumentFile);
 app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
 });
@@ -72,7 +127,7 @@ app.use('/api/invoices', authenticate, requireModulePermission('reports'), audit
 app.use('/api/activities', authenticate, requireAdmin, activitiesRouter);
 app.use('/api/settings/users', authenticate, requireAdmin, auditMutation((req) => req.path.includes('resend-invitation') ? 'user_invitation' : 'user'), usersRouter);
 app.use('/api/settings', authenticate, (req, res, next) => {
-    if (req.method === 'GET' && req.path === '/options')
+    if (req.method === 'GET' && (req.path === '/options' || req.path === '/brand-logos'))
         return next();
     return requireAdmin(req, res, next);
 }, auditMutation('setting_option'), settingsRouter);

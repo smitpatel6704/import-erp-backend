@@ -64,6 +64,12 @@ const statements = [
     "createdAt" TIMESTAMP NOT NULL DEFAULT NOW()
   )`,
   `CREATE INDEX IF NOT EXISTS "DocumentBundle_shipmentId_idx" ON "DocumentBundle" ("shipmentId")`,
+  `CREATE TABLE IF NOT EXISTS "AppSetting" (
+    "key" TEXT PRIMARY KEY,
+    "value" TEXT NOT NULL,
+    "updatedBy" TEXT,
+    "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
+  )`,
   `CREATE TABLE IF NOT EXISTS "DocumentFile" (
     "fileUrl" TEXT PRIMARY KEY,
     "fileName" TEXT NOT NULL,
@@ -73,12 +79,17 @@ const statements = [
     "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
     "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
   )`,
-  `INSERT INTO "SettingOption" ("id", "category", "value", "label", "isActive")
-    SELECT 'default-shipping-line-evergreen', 'shipping_line', 'Evergreen', 'Evergreen', TRUE
+  ...[
+    ['default-shipping-line-evergreen', 'Evergreen', 'EVERGREEN'],
+    ['default-shipping-line-hapag-lloyd', 'Hapag-Lloyd', 'Hapag-Lloyd'],
+    ['default-shipping-line-maersk', 'Maersk', 'Maersk'],
+    ['default-shipping-line-msc', 'MSC', 'MSC'],
+  ].map(([id, value, label]) => `INSERT INTO "SettingOption" ("id", "category", "value", "label", "isActive")
+    SELECT '${id}', 'shipping_line', '${value}', '${label}', TRUE
     WHERE NOT EXISTS (
       SELECT 1 FROM "SettingOption"
-      WHERE "category" = 'shipping_line' AND LOWER("value") = 'evergreen'
-    )`,
+      WHERE "category" = 'shipping_line' AND LOWER(REGEXP_REPLACE("value", '[^a-zA-Z0-9]+', '', 'g')) = LOWER(REGEXP_REPLACE('${value}', '[^a-zA-Z0-9]+', '', 'g'))
+    )`),
 ];
 
 export async function ensureFeatureSchema() {

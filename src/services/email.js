@@ -1,7 +1,7 @@
 import nodemailer from 'nodemailer';
 import * as dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const smtpConfig = () => {
   const user = process.env.SMTP_USER || process.env.GMAIL_USER;

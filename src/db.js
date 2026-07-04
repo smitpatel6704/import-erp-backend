@@ -1,6 +1,6 @@
 import pg from 'pg';
 import * as dotenv from 'dotenv';
-dotenv.config();
+dotenv.config({ quiet: true });
 const { Pool } = pg;
 const schemaIdentifiers = [
     'Activity', 'Company', 'Container', 'CustomsClearance', 'Document', 'DocumentChecklist', 'DocumentFile',
@@ -33,7 +33,7 @@ const schemaIdentifiers = [
     'taxNumber', 'bankDetails', 'customFields', 'documentIds', 'transactionDate', 'transportVendor',
     'unitPrice', 'unitType', 'updatedAt', 'uploadedAt', 'notificationUserIds',
     'uploadedBy', 'userId', 'vehicleNumber', 'vendorName', 'verifiedAt', 'vesselName',
-    'voyageNumber', 'warehouseEntry', 'warehouseLocation', 'weightCapacity',
+    'voyageNumber', 'warehouseEntry', 'warehouseLocation', 'weightCapacity', 'tokenVersion',
 ].sort((a, b) => b.length - a.length);
 const booleanColumns = new Set(['isActive', 'isVerified', 'isRead', 'isRequired', 'expiryRequired']);
 const connectionString = (() => {
@@ -47,6 +47,12 @@ export const pool = new Pool({
     connectionString,
     ssl: process.env.DATABASE_URL?.includes('supabase.com') ? { rejectUnauthorized: false } : undefined,
 });
+
+export async function verifyDatabaseConnection() {
+    const result = await pool.query('SELECT current_database() AS database, NOW() AS connected_at');
+    return result.rows[0];
+}
+
 const quoteIdentifier = (identifier) => `"${identifier}"`;
 const quoteKnownIdentifiers = (sql) => {
     const transformSqlSegment = (segment) => {

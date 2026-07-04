@@ -13,50 +13,85 @@ Bill of Lading number consists of 9 characters.
 Container number is made of 4 letters and 7 digits.
 
 Bill of Lading number
-269868191
+270232583
 From
-MUNDRA
+XINGANG
 To
 MOMBASA
-MSKU0092569
+MRKU9952269
 |
-40' Dry High
-Last updated: 14 days ago
-Gate out for delivery • MOMBASA, KENYA • 15 Jun 2026
+20' Dry Standard
+Last updated: 6 days ago
+Discharge • MOMBASA, KENYA • 28 Jun 2026
 
 Note: All times are given in local time, unless otherwise stated.
 
-Mundra
-Landmark CFS
+Xingang
+Tianjin Zhenhua Int. Trans. Co. LTD
 Gate out Empty
-30 Apr 2026 00:19
+02 May 2026 05:53
 
-MUNDRA
-MUNDRA INT.CONT.TER. PVT. LTD.
+XINGANG
+TIANJIN PORT ALLIANCE TERMINAL
 Gate in
-07 May 2026 07:35
+09 May 2026 17:21
 
-Load on REN JIAN 17 / 619S
-10 May 2026 05:23
+Load on MAERSK EL ALTO / 619W
+10 May 2026 15:35
 
-Vessel departure (REN JIAN 17 / 619S)
-10 May 2026 20:15
+Vessel departure (MAERSK EL ALTO / 619W)
+11 May 2026 12:10
+
+ULSAN
+BUSAN INTERNATIONAL TRANSHIPMENT
+Vessel arrival (MAERSK EL ALTO / 619W)
+19 May 2026 02:00
+
+Vessel departure (MAERSK EL ALTO / 619W)
+19 May 2026 03:00
+
+NINGBO
+NINGBO MEISHAN TERMINAL
+Vessel arrival (MAERSK EL ALTO / 619W)
+19 May 2026 11:35
+
+Discharge (MAERSK EL ALTO / 619W)
+20 May 2026 00:53
+
+Gate out
+24 May 2026 00:50
+
+NINGBO
+NINGBO-ZHOUSHAN YONGZHOU TERMINAL
+Gate in
+26 May 2026 01:43
+
+Load on CXL66 / 622W
+05 Jun 2026 19:45
+
+Vessel departure (CXL66 / 622W)
+06 Jun 2026 04:49
 
 MOMBASA
 MOMBASA TERMINAL
-Vessel arrival (REN JIAN 17 / 619S)
-25 May 2026 11:15
+Vessel arrival (CXL66 / 622W)
+27 Jun 2026 15:34
 
-Discharge (REN JIAN 17 / 619S)
-26 May 2026 23:06
-
-Gate out for delivery
-15 Jun 2026 18:58
+Discharge (CXL66 / 622W)
+28 Jun 2026 06:30
 
 Go to Shipment Details
 Quick links
 Shipment details
 Manage bookings
+Add to your booking
+
+We offer a range of additional services to provide reliable, secure, and seamless transportation of your cargo with Maersk.
+
+Book inland delivery in 3 easy steps
+
+Add customs clearance
+
 Plan & Book
 Prices
 Book
@@ -121,4 +156,3 @@ Unsolicited Submissions Policy
 Talk to an expert
 Find local offices & information
 Subscribe to our newsletter
-Feedback

@@ -36,6 +36,7 @@ logs/
 # Prisma
 prisma/dev.db
 node_modules/.prisma
+db/*.db
 
 # Uploads
 uploads/

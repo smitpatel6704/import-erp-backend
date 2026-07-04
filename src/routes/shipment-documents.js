@@ -59,9 +59,21 @@ const storage = multer.diskStorage({
     }
 });
 const allowedUploadTypes = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp']);
+const hasAllowedFileSignature = (filePath, mimeType) => {
+    const bytes = fs.readFileSync(filePath);
+    if (mimeType === 'application/pdf')
+        return bytes.subarray(0, 5).toString('ascii') === '%PDF-';
+    if (mimeType === 'image/png')
+        return bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+    if (mimeType === 'image/jpeg')
+        return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    if (mimeType === 'image/webp')
+        return bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP';
+    return false;
+};
 const upload = multer({
     storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 },
+    limits: { fileSize: 5 * 1024 * 1024, files: 1 },
     fileFilter: (_req, file, cb) => {
         if (allowedUploadTypes.has(file.mimetype))
             return cb(null, true);
@@ -70,8 +82,13 @@ const upload = multer({
 });
 const uploadDocumentFile = (req, res, next) => {
     upload.single('file')(req, res, (error) => {
-        if (!error)
+        if (!error) {
+            if (req.file && !hasAllowedFileSignature(req.file.path, req.file.mimetype)) {
+                fs.unlink(req.file.path, () => {});
+                return res.status(400).json({ error: 'Uploaded file content does not match an allowed PDF or image type' });
+            }
             return next();
+        }
         const message = error.code === 'LIMIT_FILE_SIZE'
             ? 'File must be 5MB or smaller'
             : error.message || 'Invalid upload';
