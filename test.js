@@ -1,46 +1,12 @@
-import axios from "axios";
+import { fetchHapagTracking } from "./src/services/hapag.js";
 
-async function testAPI() {
-  try {
-    const { data } = await axios.get(
-      "https://tracking.api.hlag.cloud/api/tracking/events?reference=29245713",
-      {
-        headers: {
-          Accept: "application/json",
-          "x-token": "public"
-        }
-      }
-    );
+const trackingNumber = process.argv[2] || "29245713";
 
-    data.groups.forEach((group) => {
-      console.log("\n========================");
-      console.log("Container:", group.containerNumber);
-      console.log("========================");
-
-      // FIND ETA / PLANNED EVENT
-      const eta = group.events.find(
-        (e) => e.eventClassifierCode === "Planned"
-      );
-
-      console.log(
-        "ETA:",
-        eta
-          ? `${eta.eventTransport}, ETA ${eta.eventDate}, ${eta.eventLocation}`
-          : "No ETA Found"
-      );
-
-      console.log("\nEVENTS:");
-
-      group.events.forEach((event) => {
-        console.log(
-          `${event.eventDate} ${event.eventTime} | ${event.eventDescription} | ${event.eventLocation}`
-        );
-      });
-    });
-
-  } catch (error) {
-    console.log(error.response?.data || error.message);
-  }
+try {
+  const result = await fetchHapagTracking(trackingNumber);
+  console.log(JSON.stringify(result, null, 2));
+  process.exit(result.ok ? 0 : 1);
+} catch (error) {
+  console.error(error.response?.data || error.message || error);
+  process.exit(1);
 }
-
-testAPI();

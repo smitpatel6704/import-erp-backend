@@ -1,23 +1,52 @@
 import axios from "axios";
 
+const HAPAG_TRACKING_URL = "https://tracking.api.hlag.cloud/api/tracking/events";
+
+const normalizeHapagReference = (value) =>
+    String(value || "")
+        .trim()
+        .toUpperCase()
+        .replace(/\s+/g, "")
+        .replace(/[^A-Z0-9-]/g, "");
+
 export async function fetchHapagTracking(trackingNumber) {
+    const reference = normalizeHapagReference(trackingNumber);
+    if (!reference) {
+        return {
+            ok: false,
+            trackingNo: trackingNumber,
+            error: "Hapag-Lloyd tracking needs a booking, BL, or container reference"
+        };
+    }
+
     try {
         const { data } = await axios.get(
-            `https://tracking.api.hlag.cloud/api/tracking/events?reference=${encodeURIComponent(trackingNumber)}`,
+            HAPAG_TRACKING_URL,
             {
+                params: { reference },
                 headers: {
                     Accept: "application/json",
                     "x-token": "public",
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-                }
+                },
+                timeout: 30000,
+                validateStatus: (status) => status >= 200 && status < 500
             }
         );
+
+        if (data?.status === 422 || data?.error || data?.message) {
+            return {
+                ok: false,
+                trackingNo: reference,
+                error: data?.message || data?.error || `Hapag-Lloyd rejected reference ${reference}`
+            };
+        }
 
         if (!data || !data.groups || data.groups.length === 0) {
              return {
                  ok: false,
-                 trackingNo: trackingNumber,
-                 error: 'No results found on Hapag-Lloyd tracking for ' + trackingNumber
+                 trackingNo: reference,
+                 error: 'No results found on Hapag-Lloyd tracking for ' + reference
              };
         }
 
@@ -108,7 +137,7 @@ export async function fetchHapagTracking(trackingNumber) {
 
         const result = {
             ok: true,
-            trackingNo: trackingNumber,
+            trackingNo: reference,
             vesselName: vesselName, 
             originPort: originPort,
             destinationPort: destinationPort,
@@ -140,7 +169,7 @@ export async function fetchHapagTracking(trackingNumber) {
         console.error("Hapag tracking error:", error.message);
         return {
             ok: false,
-            trackingNo: trackingNumber,
+            trackingNo: reference,
             error: error.response?.data?.message || error.message
         };
     }
