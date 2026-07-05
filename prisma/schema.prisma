@@ -178,6 +178,7 @@ model Container {
   stuffingType    String?
   weightCapacity  Float     @default(0)
   currentWeight   Float     @default(0)
+  packageCount    Int       @default(0)
   status          String    @default("at_pol")
   currentLocation String?
   goodsDescription String?

@@ -469,14 +469,14 @@ router.post('/', async (req, res) => {
             await db.execute(`
               INSERT INTO Container (
                 id, containerNumber, containerType, containerSize, sealNumber, stuffingType,
-                weightCapacity, currentWeight, status, currentLocation, goodsDescription,
+                weightCapacity, currentWeight, packageCount, status, currentLocation, goodsDescription,
                 shipmentId, isActive, createdAt, updatedAt
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `, [
                 createId(), container.containerNumber, container.containerType || 'standard',
                 container.containerSize || '20ft', container.sealNumber || null,
                 container.stuffingType || null, container.weightCapacity || 0,
-                container.currentWeight || 0, container.status || 'at_pol',
+                container.currentWeight || 0, container.packageCount || 0, container.status || 'at_pol',
                 container.currentLocation || null, container.goodsDescription || null,
                 id, 1, new Date(), new Date()
             ]);

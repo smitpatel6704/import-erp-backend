@@ -54,7 +54,7 @@ router.get('/', async (req, res) => {
     const users = await db.query(`
       SELECT id, email, name, avatar, role, department, phone, permissions,
              isActive, passwordSetAt, lastLoginAt, createdAt, updatedAt
-      FROM User WHERE name LIKE ? OR email LIKE ? ORDER BY createdAt DESC
+      FROM User WHERE isActive = 1 AND (name LIKE ? OR email LIKE ?) ORDER BY createdAt DESC
     `, [search, search]);
     return res.json({ data: users });
   } catch (error) {
