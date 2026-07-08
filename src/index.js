@@ -1,8 +1,7 @@
 import app from './app.js';
 import { verifyDatabaseConnection } from './db.js';
 import { ensureFeatureSchema } from './services/schema.js';
-import { startNotificationScheduler } from './services/notifications.js';
-import { startShipmentTrackingScheduler } from './services/tracking.js';
+import { startCronJobSchedulers } from './services/cron-jobs.js';
 const PORT = process.env.PORT || 5001;
 
 async function start() {
@@ -13,8 +12,7 @@ async function start() {
     console.log('[OK] Database schema is ready');
     app.listen(PORT, () => {
         console.log(`[OK] Server running on port ${PORT}`);
-        startNotificationScheduler();
-        startShipmentTrackingScheduler();
+        startCronJobSchedulers();
         console.log('[OK] Background schedulers started');
     });
 }

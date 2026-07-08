@@ -1,6 +1,5 @@
 import { Router } from 'express';
-import { runNotificationReminders } from '../services/notifications.js';
-import { syncDueShipmentTrackings } from '../services/tracking.js';
+import { runDailyCronJobs } from '../services/cron-jobs.js';
 
 const router = Router();
 
@@ -13,14 +12,8 @@ const runDailyJobs = async (req, res) => {
         if (req.headers.authorization !== `Bearer ${cronSecret}`) {
             return res.status(401).json({ error: 'Unauthorized' });
         }
-        const carrierShipments = await syncDueShipmentTrackings();
-        const notifications = await runNotificationReminders();
-        return res.json({
-            data: {
-                notifications,
-                carrierShipmentsChecked: carrierShipments,
-            },
-        });
+        const result = await runDailyCronJobs({ triggeredBy: 'cron' });
+        return res.json({ data: result });
     }
     catch (error) {
         console.error('Daily cron error:', error);

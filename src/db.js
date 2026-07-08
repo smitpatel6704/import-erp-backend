@@ -3,7 +3,7 @@ import * as dotenv from 'dotenv';
 dotenv.config({ quiet: true });
 const { Pool } = pg;
 const schemaIdentifiers = [
-    'Activity', 'Company', 'Container', 'CustomsClearance', 'Document', 'DocumentChecklist', 'DocumentFile',
+    'Activity', 'BrandLogo', 'Company', 'Container', 'CustomsClearance', 'Document', 'DocumentChecklist',
     'DocumentBundle', 'Expense', 'ExporterCompany', 'Invoice', 'InvoiceItem', 'Logistics', 'Notification',
     'Product', 'SettingOption', 'Shipment', 'ShipmentDocument', 'ShipmentItem', 'TimelineEvent', 'LoginOtp',
     'Transaction', 'User',

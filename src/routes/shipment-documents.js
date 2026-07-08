@@ -10,7 +10,6 @@ import { PDFDocument } from 'pdf-lib';
 import { createNotification, notificationRecipients } from '../services/notifications.js';
 import {
     readDocumentFileBuffer,
-    storeDocumentBuffer,
     storeUploadedDocumentFile,
 } from '../services/document-files.js';
 const router = Router();
@@ -170,12 +169,6 @@ router.post('/shipment/:id/merge', async (req, res) => {
         fs.writeFileSync(path.join(uploadDir, filename), mergedBuffer);
         const fileUrl = `/uploads/${filename}`;
         const downloadName = await buildMergedDocumentName(shipmentId, orderedDocuments);
-        await storeDocumentBuffer({
-            fileUrl,
-            fileName: filename,
-            fileType: 'application/pdf',
-            buffer: mergedBuffer,
-        });
         await db.execute(`
           INSERT INTO DocumentBundle (id, shipmentId, name, fileUrl, documentIds, createdBy, createdAt)
           VALUES (?, ?, ?, ?, ?, ?, ?)

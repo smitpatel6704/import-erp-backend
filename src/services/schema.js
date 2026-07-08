@@ -1,4 +1,5 @@
 import { pool } from '../db.js';
+import { Buffer } from 'node:buffer';
 
 const statements = [
   `ALTER TABLE "ExporterCompany" ADD COLUMN IF NOT EXISTS "contactPerson" TEXT`,
@@ -70,13 +71,11 @@ const statements = [
     "updatedBy" TEXT,
     "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
   )`,
-  `CREATE TABLE IF NOT EXISTS "DocumentFile" (
-    "fileUrl" TEXT PRIMARY KEY,
-    "fileName" TEXT NOT NULL,
-    "fileType" TEXT NOT NULL,
-    "fileSize" INTEGER NOT NULL,
+  `DROP TABLE IF EXISTS "DocumentFile"`,
+  `CREATE TABLE IF NOT EXISTS "BrandLogo" (
+    "mode" TEXT PRIMARY KEY,
     "fileData" BYTEA NOT NULL,
-    "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
+    "mimeType" TEXT NOT NULL DEFAULT 'image/png',
     "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
   )`,
   ...[
@@ -95,5 +94,25 @@ const statements = [
 export async function ensureFeatureSchema() {
   for (const statement of statements) {
     await pool.query(statement);
+  }
+
+  // Migrate existing logos from AppSetting (base64 TEXT) to BrandLogo (BYTEA)
+  const existingLogos = await pool.query(
+    `SELECT "key", "value" FROM "AppSetting" WHERE "key" LIKE 'brand_logo_%' AND "value" != ''`
+  );
+  for (const row of existingLogos.rows) {
+    const modeMap = { brand_logo_light: 'light', brand_logo_dark: 'dark', brand_logo_collapsed: 'collapsed' };
+    const mode = modeMap[row.key];
+    if (!mode) continue;
+    const [existing] = (await pool.query('SELECT 1 FROM "BrandLogo" WHERE "mode" = $1', [mode])).rows;
+    if (existing) continue;
+    const match = String(row.value).match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
+    if (!match) continue;
+    const buffer = Buffer.from(match[2], 'base64');
+    await pool.query(
+      'INSERT INTO "BrandLogo" ("mode", "fileData", "mimeType", "updatedAt") VALUES ($1, $2, $3, NOW()) ON CONFLICT ("mode") DO NOTHING',
+      [mode, buffer, match[1]]
+    );
+    console.log(`Migrated ${row.key} to BrandLogo table as binary`);
   }
 }

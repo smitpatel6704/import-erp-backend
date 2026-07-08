@@ -25,6 +25,7 @@ import maerskRouter from './routes/maersk.js';
 import { auditMutation } from './services/audit.js';
 import { authenticate, requireAdmin, requireModulePermission } from './services/auth.js';
 import { sendStoredDocumentFile } from './services/document-files.js';
+import { pool } from './db.js';
 const app = express();
 const isProduction = () => process.env.NODE_ENV === 'production' || process.env.VERCEL;
 const allowedOrigins = () => new Set(
@@ -101,6 +102,43 @@ app.get('/api/uploads/:filename', authenticate, requireModulePermission('documen
 app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
 });
+
+// Public branding routes (no auth required — logos are branding, not sensitive)
+app.get('/api/branding/logo/:mode', async (req, res) => {
+    try {
+        const mode = ['light', 'dark', 'collapsed'].includes(req.params.mode) ? req.params.mode : 'light';
+        const { rows } = await pool.query('SELECT "fileData", "mimeType" FROM "BrandLogo" WHERE "mode" = $1', [mode]);
+        if (!rows?.length) {
+            res.setHeader('Cache-Control', 'public, max-age=300');
+            return res.status(204).end();
+        }
+        const buffer = rows[0].fileData;
+        res.setHeader('Content-Type', rows[0].mimeType || 'image/png');
+        res.setHeader('Content-Length', buffer.length);
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        res.status(200).end(buffer);
+    }
+    catch (error) {
+        console.error('Brand logo GET error:', error);
+        res.status(500).end();
+    }
+});
+
+app.get('/api/branding/logos', async (_req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT "mode" FROM "BrandLogo"');
+        const exists = { light: false, dark: false, collapsed: false };
+        for (const row of rows) {
+            if (exists.hasOwnProperty(row.mode)) exists[row.mode] = true;
+        }
+        res.json({ data: exists });
+    }
+    catch (error) {
+        console.error('Brand logos status GET error:', error);
+        res.status(500).json({ error: 'Failed to fetch brand logos status' });
+    }
+});
+
 app.use('/api/cron', cronRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/dashboard', authenticate, requireModulePermission('dashboard'), dashboardRouter);

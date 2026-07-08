@@ -1,6 +1,8 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { Buffer } from 'node:buffer';
+import { db, pool } from '../db.js';
 import { createId } from '@paralleldrive/cuid2';
+import { getCronDashboardStatus, runCronJobById } from '../services/cron-jobs.js';
 const router = Router();
 const BRAND_LOGO_KEYS = {
     light: 'brand_logo_light',
@@ -17,6 +19,34 @@ const isSupportedLogoDataUrl = (value) => {
     if (value.length > MAX_LOGO_DATA_URL_LENGTH) return false;
     return /^data:image\/(png|jpeg|jpg|webp|gif|svg\+xml);base64,/i.test(value);
 };
+
+// GET /api/settings/cron/status
+router.get('/cron/status', async (_req, res) => {
+    try {
+        const status = await getCronDashboardStatus();
+        return res.json({ data: status });
+    }
+    catch (error) {
+        console.error('Settings cron status GET error:', error);
+        return res.status(500).json({ error: 'Failed to fetch cron status' });
+    }
+});
+
+// POST /api/settings/cron/run
+router.post('/cron/run', async (req, res) => {
+    try {
+        const jobId = String(req.body?.jobId || 'daily');
+        const result = await runCronJobById(jobId, {
+            triggeredBy: 'manual',
+            userId: req.user?.id || null,
+        });
+        return res.json({ data: result });
+    }
+    catch (error) {
+        console.error('Settings cron run POST error:', error);
+        return res.status(error?.status || 500).json({ error: error?.message || 'Failed to run cron job' });
+    }
+});
 
 // GET /api/settings/brand-logos
 router.get('/brand-logos', async (_req, res) => {
@@ -49,18 +79,39 @@ router.put('/brand-logos', async (req, res) => {
         }
         const key = BRAND_LOGO_KEYS[mode];
         if (!logoDataUrl) {
-            await db.execute('DELETE FROM "AppSetting" WHERE "key" = ?', [key]);
-            return res.json({ data: { mode, logoDataUrl: '' } });
+            await Promise.all([
+                db.execute('DELETE FROM "AppSetting" WHERE "key" = ?', [key]),
+                db.execute('DELETE FROM "BrandLogo" WHERE "mode" = ?', [mode]),
+            ]);
+            return res.json({ data: { mode, url: '' } });
         }
-        await db.execute(`
-            INSERT INTO "AppSetting" ("key", "value", "updatedBy", "updatedAt")
-            VALUES (?, ?, ?, NOW())
-            ON CONFLICT ("key") DO UPDATE
-            SET "value" = EXCLUDED."value",
-                "updatedBy" = EXCLUDED."updatedBy",
-                "updatedAt" = NOW()
-        `, [key, logoDataUrl, req.user?.id || null]);
-        return res.json({ data: { mode, logoDataUrl } });
+        // Parse data URL and store as binary in BrandLogo table
+        const match = logoDataUrl.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
+        if (!match) {
+            return res.status(400).json({ error: 'Invalid image data URL' });
+        }
+        const mimeType = match[1];
+        const buffer = Buffer.from(match[2], 'base64');
+        await Promise.all([
+            db.execute(`
+                INSERT INTO "AppSetting" ("key", "value", "updatedBy", "updatedAt")
+                VALUES (?, ?, ?, NOW())
+                ON CONFLICT ("key") DO UPDATE
+                SET "value" = EXCLUDED."value",
+                    "updatedBy" = EXCLUDED."updatedBy",
+                    "updatedAt" = NOW()
+            `, [key, logoDataUrl, req.user?.id || null]),
+            pool.query(
+                `INSERT INTO "BrandLogo" ("mode", "fileData", "mimeType", "updatedAt")
+                 VALUES ($1, $2, $3, NOW())
+                 ON CONFLICT ("mode") DO UPDATE
+                 SET "fileData" = EXCLUDED."fileData",
+                     "mimeType" = EXCLUDED."mimeType",
+                     "updatedAt" = NOW()`,
+                [mode, buffer, mimeType]
+            ),
+        ]);
+        return res.json({ data: { mode, url: `/api/branding/logo/${mode}` } });
     }
     catch (error) {
         console.error('Settings brand logos PUT error:', error);
@@ -72,8 +123,11 @@ router.put('/brand-logos', async (req, res) => {
 router.delete('/brand-logos/:mode', async (req, res) => {
     try {
         const mode = normalizeLogoMode(req.params.mode);
-        await db.execute('DELETE FROM "AppSetting" WHERE "key" = ?', [BRAND_LOGO_KEYS[mode]]);
-        return res.json({ data: { mode, logoDataUrl: '' } });
+        await Promise.all([
+            db.execute('DELETE FROM "AppSetting" WHERE "key" = ?', [BRAND_LOGO_KEYS[mode]]),
+            db.execute('DELETE FROM "BrandLogo" WHERE "mode" = ?', [mode]),
+        ]);
+        return res.json({ data: { mode, url: '' } });
     }
     catch (error) {
         console.error('Settings brand logos DELETE error:', error);
