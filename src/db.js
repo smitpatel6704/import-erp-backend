@@ -25,7 +25,7 @@ const schemaIdentifiers = [
     'isVerified', 'issueDate', 'lastLoginAt', 'netWeight', 'officeAddress', 'offloadDate',
     'originCountry', 'originPort', 'packingType', 'paidAmount', 'panNumber', 'passwordSetAt',
     'passwordSetupExpiresAt', 'passwordSetupTokenHash', 'paymentDate', 'permissions',
-    'paymentMethod', 'paymentStatus', 'podStatus', 'productId', 'referenceNumber', 'rejectedReason',
+    'paymentMethod', 'paymentStatus', 'podStatus', 'productId', 'referenceNumber', 'rejectedReason', 'requireOtp',
     'routeFrom', 'routeTo', 'sealNumber', 'shipmentDocuments', 'shipmentId', 'shipmentItems',
     'shipmentNumber', 'shipmentStage', 'shipmentValue', 'shippingAddress', 'shippingLine',
     'storageDays', 'stuffingType', 'taxAmount', 'taxRate', 'timelineEvents', 'totalAmount',
@@ -35,7 +35,7 @@ const schemaIdentifiers = [
     'uploadedBy', 'userId', 'vehicleNumber', 'vendorName', 'verifiedAt', 'vesselName',
     'voyageNumber', 'warehouseEntry', 'warehouseLocation', 'weightCapacity', 'tokenVersion',
 ].sort((a, b) => b.length - a.length);
-const booleanColumns = new Set(['isActive', 'isVerified', 'isRead', 'isRequired', 'expiryRequired']);
+const booleanColumns = new Set(['isActive', 'isVerified', 'isRead', 'isRequired', 'expiryRequired', 'requireOtp']);
 const connectionString = (() => {
     if (!process.env.DATABASE_URL)
         return undefined;
@@ -69,8 +69,8 @@ const quoteKnownIdentifiers = (sql) => {
         .join('');
 };
 const normalizeBooleanLiterals = (sql) => sql
-    .replace(/"?(isActive|isVerified|isRead|isRequired|expiryRequired)"?\s*=\s*1\b/g, '"$1" = TRUE')
-    .replace(/"?(isActive|isVerified|isRead|isRequired|expiryRequired)"?\s*=\s*0\b/g, '"$1" = FALSE');
+    .replace(/"?(isActive|isVerified|isRead|isRequired|expiryRequired|requireOtp)"?\s*=\s*1\b/g, '"$1" = TRUE')
+    .replace(/"?(isActive|isVerified|isRead|isRequired|expiryRequired|requireOtp)"?\s*=\s*0\b/g, '"$1" = FALSE');
 const columnListBeforeValues = (sql) => {
     const match = sql.match(/INSERT\s+INTO\s+"?[A-Za-z_][A-Za-z0-9_]*"?\s*\(([\s\S]*?)\)\s*VALUES/i);
     if (!match?.[1])
