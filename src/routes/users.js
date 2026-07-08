@@ -53,7 +53,7 @@ router.get('/', async (req, res) => {
     const search = `%${req.query.search || ''}%`;
     const users = await db.query(`
       SELECT id, email, name, avatar, role, department, phone, permissions,
-             isActive, passwordSetAt, lastLoginAt, createdAt, updatedAt
+             isActive, requireOtp, passwordSetAt, lastLoginAt, createdAt, updatedAt
       FROM User WHERE isActive = 1 AND (name LIKE ? OR email LIKE ?) ORDER BY createdAt DESC
     `, [search, search]);
     return res.json({ data: users });
@@ -76,16 +76,16 @@ router.post('/', async (req, res) => {
     await db.execute(`
       INSERT INTO User (
         id, email, name, password, avatar, role, department, phone, permissions,
-        isActive, passwordSetupTokenHash, passwordSetupExpiresAt, createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?)
+        isActive, requireOtp, passwordSetupTokenHash, passwordSetupExpiresAt, createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?)
     `, [
       id, email, body.name, hashPassword(createInvitationToken().token), body.avatar || null,
       body.role || 'user', body.department || null, body.phone || null,
       JSON.stringify(normalizePermissions(body.permissions)), body.isActive === false ? 0 : 1,
-      invitation.hash, expiresAt, new Date(), new Date(),
+      body.requireOtp === false ? 0 : 1, invitation.hash, expiresAt, new Date(), new Date(),
     ]);
     const [user] = await db.query(`
-      SELECT id, email, name, avatar, role, department, phone, permissions, isActive, createdAt
+      SELECT id, email, name, avatar, role, department, phone, permissions, isActive, requireOtp, createdAt
       FROM User WHERE id = ?
     `, [id]);
     await pool.query(`
@@ -122,13 +122,13 @@ router.post('/:id/resend-invitation', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    const fields = ['email', 'name', 'avatar', 'role', 'department', 'phone', 'isActive'];
+    const fields = ['email', 'name', 'avatar', 'role', 'department', 'phone', 'isActive', 'requireOtp'];
     const updates = [];
     const values = [];
     for (const field of fields) {
       if (req.body[field] !== undefined) {
         updates.push(`${field} = ?`);
-        values.push(field === 'isActive' ? (req.body[field] ? 1 : 0) : req.body[field]);
+        values.push(['isActive', 'requireOtp'].includes(field) ? (req.body[field] ? 1 : 0) : req.body[field]);
       }
     }
     if (req.body.permissions !== undefined) {
@@ -141,7 +141,7 @@ router.put('/:id', async (req, res) => {
       await db.execute(`UPDATE User SET ${updates.join(', ')} WHERE id = ?`, values);
     }
     const [user] = await db.query(`
-      SELECT id, email, name, avatar, role, department, phone, permissions, isActive, updatedAt
+      SELECT id, email, name, avatar, role, department, phone, permissions, isActive, requireOtp, updatedAt
       FROM User WHERE id = ?
     `, [req.params.id]);
     return res.json({ data: user });

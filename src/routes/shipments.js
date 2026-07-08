@@ -271,6 +271,18 @@ router.put('/:id', async (req, res) => {
             const tlId = createId();
             await db.execute(`INSERT INTO TimelineEvent (id, shipmentId, event, description, location, timestamp) VALUES (?, ?, ?, ?, ?, ?)`, [tlId, id, statusLabels[body.status] || `Status Updated: ${body.status}`, `Shipment status changed from ${oldShipment.status} to ${body.status}`, body.destinationPort || null, new Date()]);
             const isHighPriority = ['at_pod', 'customs_clearance', 'delivered'].includes(body.status);
+            
+            let notifyOnStatusChange = true;
+            const [row] = await db.query('SELECT "value" FROM "AppSetting" WHERE "key" = ?', ['workflow_automations']);
+            if (row && row.value) {
+                try {
+                    const settings = JSON.parse(row.value);
+                    if (typeof settings.notifyOnStatusChange !== 'undefined') {
+                        notifyOnStatusChange = !!settings.notifyOnStatusChange;
+                    }
+                } catch(e) {}
+            }
+
             await createNotification({
                 title: statusLabels[body.status] || 'Shipment updated',
                 message: `${shipment.shipmentNumber} changed from ${oldShipment.status} to ${body.status}.`,
@@ -278,7 +290,7 @@ router.put('/:id', async (req, res) => {
                 type: isHighPriority ? 'warning' : 'info',
                 priority: isHighPriority ? 'high' : shipment.priority,
                 actionUrl: `/shipments/${id}`,
-                emailEnabled: isHighPriority,
+                emailEnabled: notifyOnStatusChange,
                 recipients: await notificationRecipients(id),
             });
         }

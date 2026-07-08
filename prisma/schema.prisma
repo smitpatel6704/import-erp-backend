@@ -23,6 +23,7 @@ model User {
   phone         String?
   permissions   Json           @default("[]")
   isActive      Boolean        @default(true)
+  requireOtp    Boolean        @default(true)
   tokenVersion  Int            @default(0)
   lastLoginAt   DateTime?
   createdAt     DateTime       @default(now())

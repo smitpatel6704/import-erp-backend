@@ -81,6 +81,58 @@ router.delete('/brand-logos/:mode', async (req, res) => {
     }
 });
 
+// GET /api/settings/workflow
+router.get('/workflow', async (_req, res) => {
+    try {
+        const [row] = await db.query(
+            'SELECT "value" FROM "AppSetting" WHERE "key" = ?',
+            ['workflow_automations']
+        );
+        let settings = {
+            autoAssignTracking: true,
+            requireDocumentsForClearance: true,
+            notifyOnStatusChange: true,
+            notifyOnDelay: true
+        };
+        if (row && row.value) {
+            try {
+                settings = { ...settings, ...JSON.parse(row.value) };
+            } catch (e) {
+                console.error('Failed to parse workflow_automations setting:', e);
+            }
+        }
+        return res.json({ data: settings });
+    }
+    catch (error) {
+        console.error('Settings workflow GET error:', error);
+        return res.status(500).json({ error: 'Failed to fetch workflow settings' });
+    }
+});
+
+// PUT /api/settings/workflow
+router.put('/workflow', async (req, res) => {
+    try {
+        const settings = req.body || {};
+        const value = JSON.stringify(settings);
+        
+        await db.execute(`
+            INSERT INTO "AppSetting" ("key", "value", "updatedBy", "updatedAt")
+            VALUES (?, ?, ?, NOW())
+            ON CONFLICT ("key") DO UPDATE
+            SET "value" = EXCLUDED."value",
+                "updatedBy" = EXCLUDED."updatedBy",
+                "updatedAt" = NOW()
+        `, ['workflow_automations', value, req.user?.id || null]);
+        
+        return res.json({ data: settings });
+    }
+    catch (error) {
+        console.error('Settings workflow PUT error:', error);
+        return res.status(500).json({ error: 'Failed to save workflow settings' });
+    }
+});
+
+
 // GET /api/settings/options?category=shipping_line
 router.get('/options', async (req, res) => {
     try {

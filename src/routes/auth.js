@@ -137,6 +137,27 @@ router.post('/login', rateLimitAuth('login', (req) => String(req.body.email || '
     const [user] = await db.query('SELECT * FROM User WHERE email = ?', [email]);
     if (!user || !user.isActive || !verifyPassword(req.body.password, user.password))
       return res.status(401).json({ error: 'Invalid email or password' });
+
+    if (user.requireOtp === false || user.requireOtp === 0) {
+      const now = new Date();
+      await db.execute('UPDATE User SET lastLoginAt = ?, updatedAt = ? WHERE id = ?', [now, now, user.id]);
+      await recordActivity({
+        userId: user.id,
+        action: 'login',
+        entity: 'user',
+        entityId: user.id,
+        details: `Logged in directly (OTP bypassed) as ${user.email}`,
+        ipAddress: req.ip || req.headers['x-forwarded-for'] || null,
+      });
+      return res.json({
+        data: {
+          otpRequired: false,
+          token: createSessionToken(user),
+          user: publicUser(user)
+        }
+      });
+    }
+
     const code = createOtpCode();
     const otpId = createId();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
