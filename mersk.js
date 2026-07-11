@@ -58,9 +58,6 @@ try {
 
   const text = await page.locator('body').innerText();
 
-  await page.screenshot({ path: 'maersk-debug.png', fullPage: true });
-  await fs.writeFile('maersk-debug.txt', text);
-
   if (text.includes('No results found') && !text.includes('Bill of Lading number')) {
     console.log(
       JSON.stringify(

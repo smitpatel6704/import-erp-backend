@@ -187,6 +187,7 @@ const localChromeExecutablePath = () => process.env.CHROME_EXECUTABLE_PATH ||
  * Returns the standard tracking result format.
  */
 export async function scrapeMaerskPublicTracking(trackingNo) {
+    console.log(`[Maersk Scraper] Starting tracking for ${trackingNo}...`);
     const trackingUrl = `https://www.maersk.com/tracking/${encodeURIComponent(trackingNo)}`;
 
     let executablePath = localChromeExecutablePath();
@@ -197,6 +198,7 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
         additionalArgs = serverlessChromium.args;
     }
 
+    console.log('[Maersk Scraper] Launching browser...');
     const browser = await chromium.launch({
         headless: process.env.MAERSK_SCRAPER_HEADLESS !== 'false',
         executablePath,
@@ -228,8 +230,9 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
             return Number.isNaN(d.getTime()) ? null : d;
         };
 
+        console.log(`[Maersk Scraper] Navigating to ${trackingUrl}...`);
         await page.goto(trackingUrl, {
-            waitUntil: 'networkidle',
+            waitUntil: 'domcontentloaded',
             timeout: 120000,
         });
 
@@ -238,6 +241,7 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
             await page.getByRole('button', { name: /allow all/i }).click({ timeout: 8000 });
         } catch { /* Cookie banner may not appear */ }
 
+        console.log('[Maersk Scraper] Waiting for tracking results to load...');
         await page.waitForFunction(
             () => {
                 const text = document.body.innerText;
@@ -248,6 +252,7 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
 
         await page.waitForTimeout(3000);
 
+        console.log('[Maersk Scraper] Content rendered, extracting text...');
         const text = await page.locator('body').innerText();
 
         // No results
@@ -380,6 +385,7 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
             url: trackingUrl,
         };
     } finally {
+        console.log('[Maersk Scraper] Closing browser.');
         await browser.close();
     }
 }
