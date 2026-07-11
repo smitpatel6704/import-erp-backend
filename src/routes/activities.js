@@ -14,6 +14,8 @@ const shipmentActionLabel = (action) => {
 };
 
 const buildShipmentDetails = (activity, shipment) => {
+    if (activity.details && /\bchanged from\b/i.test(activity.details))
+        return activity.details;
     if (!shipment)
         return activity.details;
     const names = [shipment.importerName, shipment.exporterName].filter(Boolean);
@@ -67,7 +69,8 @@ router.get('/', async (req, res) => {
         const allowedDir = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
         const queryParams = [...params, limit, skip];
         const activities = await db.query(`
-      SELECT a.*, u.name as userName, u.avatar as userAvatar, u.role as userRole 
+      SELECT a.*, u.name as userName, u.avatar as userAvatar, u.role as userRole,
+             u.department as userDepartment
       FROM Activity a 
       LEFT JOIN User u ON a.userId = u.id 
       WHERE ${whereClause} 
@@ -98,10 +101,17 @@ router.get('/', async (req, res) => {
             details: a.entity === 'shipment'
                 ? buildShipmentDetails(a, shipmentById.get(a.entityId))
                 : a.details,
-            user: a.userId ? { id: a.userId, name: a.userName, avatar: a.userAvatar, role: a.userRole } : null,
+            user: a.userId ? {
+                id: a.userId,
+                name: a.userName,
+                avatar: a.userAvatar,
+                role: a.userRole,
+                department: a.userDepartment,
+            } : null,
             userName: undefined,
             userAvatar: undefined,
-            userRole: undefined
+            userRole: undefined,
+            userDepartment: undefined
         }));
         return res.json({ data: formattedActivities, pagination: { total, page, limit } });
     }

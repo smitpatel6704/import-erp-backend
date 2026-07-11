@@ -17,6 +17,60 @@ const merskScriptPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../
 
 const normalizeInvoiceNumber = (value) => String(value || '').trim();
 
+const auditFieldLabels = {
+    companyId: 'Importer Name',
+    exporterCompanyId: 'Exporter Name',
+    bookingNumber: 'Booking Number',
+    blNumber: 'BL Number',
+    shippingLine: 'Shipping Line',
+    freightForwarder: 'Freight Forwarder',
+    vesselName: 'Vessel Name',
+    voyageNumber: 'Voyage Number',
+    originCountry: 'Origin Country',
+    originPort: 'Origin Port',
+    destinationPort: 'Destination Port',
+    warehouseLocation: 'Warehouse Location',
+    deliveryAddress: 'Delivery Address',
+    priority: 'Priority',
+    status: 'Status',
+    shipmentValue: 'Shipment Value',
+    currency: 'Currency',
+    goodsDescription: 'Goods Description',
+    internalNotes: 'Internal Notes',
+    notes: 'Notes',
+    etd: 'ETD',
+    eta: 'ETA',
+    actualArrival: 'Actual Arrival',
+};
+
+const auditValue = (value) => {
+    if (value === null || value === undefined || value === '') return '—';
+    if (value instanceof Date) return value.toISOString();
+    return String(value);
+};
+
+const shipmentAuditDetails = (before, after, body) => {
+    const changes = Object.keys(auditFieldLabels).flatMap((field) => {
+        if (body[field] === undefined) return [];
+        const oldValue = field === 'companyId'
+            ? before.importerName
+            : field === 'exporterCompanyId'
+                ? before.exporterName
+                : before[field];
+        const newValue = field === 'companyId'
+            ? after.company?.name
+            : field === 'exporterCompanyId'
+                ? after.exporterCompany?.name
+                : after[field];
+        if (auditValue(oldValue) === auditValue(newValue)) return [];
+        return [`${auditFieldLabels[field]} changed from "${auditValue(oldValue)}" → "${auditValue(newValue)}"`];
+    });
+    const shipmentNumber = after.shipmentNumber || before.shipmentNumber || before.blNumber || after.id;
+    return changes.length
+        ? `Updated Shipment ${shipmentNumber}: ${changes.join(', ')}.`
+        : `Updated Shipment ${shipmentNumber}`;
+};
+
 const upsertShipmentInvoice = async (shipmentId, body) => {
     const invoiceNumber = normalizeInvoiceNumber(body.invoiceNumber);
     if (!invoiceNumber)
@@ -194,7 +248,13 @@ router.put('/:id', async (req, res) => {
     const { id } = req.params;
     try {
         const body = req.body;
-        const oldShipments = await db.query('SELECT status, bookingNumber, blNumber, shippingLine FROM Shipment WHERE id = ?', [id]);
+        const oldShipments = await db.query(`
+          SELECT s.*, c.name AS importerName, e.name AS exporterName
+          FROM Shipment s
+          LEFT JOIN Company c ON s.companyId = c.id
+          LEFT JOIN ExporterCompany e ON s.exporterCompanyId = e.id
+          WHERE s.id = ?
+        `, [id]);
         const oldShipment = oldShipments[0];
         if (!oldShipment)
             return res.status(404).json({ error: 'Shipment not found' });
@@ -303,7 +363,10 @@ router.put('/:id', async (req, res) => {
             (shipment.blNumber || shipment.bookingNumber)) {
             Object.assign(shipment, await syncShipmentTracking(id, true));
         }
-        return res.json({ data: shipment });
+        return res.json({
+            data: shipment,
+            auditDetails: shipmentAuditDetails(oldShipment, shipment, body),
+        });
     }
     catch (error) {
         console.error('Shipment PUT error:', error);

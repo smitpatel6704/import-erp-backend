@@ -13,8 +13,11 @@ export async function fetchHapagTracking(trackingNumber) {
     const reference = normalizeHapagReference(trackingNumber);
     if (!reference) {
         return {
-            ok: false,
-            trackingNo: trackingNumber,
+            status: 'No results found',
+            location: null,
+            eta: null,
+            lastEvent: 'Hapag-Lloyd tracking needs a booking, BL, or container reference.',
+            rawDetails: null,
             error: "Hapag-Lloyd tracking needs a booking, BL, or container reference"
         };
     }
@@ -36,16 +39,22 @@ export async function fetchHapagTracking(trackingNumber) {
 
         if (data?.status === 422 || data?.error || data?.message) {
             return {
-                ok: false,
-                trackingNo: reference,
+                status: 'No results found',
+                location: null,
+                eta: null,
+                lastEvent: data?.message || data?.error || `Hapag-Lloyd rejected reference ${reference}`,
+                rawDetails: null,
                 error: data?.message || data?.error || `Hapag-Lloyd rejected reference ${reference}`
             };
         }
 
         if (!data || !data.groups || data.groups.length === 0) {
              return {
-                 ok: false,
-                 trackingNo: reference,
+                 status: 'No results found',
+                 location: null,
+                 eta: null,
+                 lastEvent: 'No results found on Hapag-Lloyd tracking for ' + reference,
+                 rawDetails: null,
                  error: 'No results found on Hapag-Lloyd tracking for ' + reference
              };
         }
@@ -53,6 +62,7 @@ export async function fetchHapagTracking(trackingNumber) {
         let firstEta = null;
         let lastEventDescription = '';
         let lastEventDate = '';
+        let lastEventLocation = '';
         let vesselName = '';
         let originPort = '';
         let destinationPort = '';
@@ -85,12 +95,13 @@ export async function fetchHapagTracking(trackingNumber) {
             if (Array.isArray(group.events)) {
                 group.events.forEach((event) => {
                     const eDate = `${event.eventDate} ${event.eventTime || ''}`.trim();
+                    const classifier = String(event.eventClassifierCode || '').toUpperCase();
                     allEvents.push({
                         event: event.eventDescription,
                         location: event.eventLocation,
                         dateText: eDate,
                         vessel: event.eventTransport || '',
-                        isActual: event.eventClassifierCode !== 'Planned'
+                        isActual: classifier === 'ACT' || classifier === 'ACTUAL'
                     });
                 });
             }
@@ -110,7 +121,11 @@ export async function fetchHapagTracking(trackingNumber) {
             destinationPort = lastEvent.location || '';
             
             // ETA: look for Planned Arrival or Discharge
-            const plannedEta = data.groups?.[0]?.events?.find(e => e.eventClassifierCode === "Planned" && (e.eventDescription?.toLowerCase().includes("arrival") || e.eventDescription?.toLowerCase().includes("discharge") || e.eventDescription?.toLowerCase().includes("delivered")));
+            const plannedEta = data.groups
+                ?.flatMap((group) => group.events || [])
+                .find((event) =>
+                    ['PLN', 'EST', 'PLANNED', 'ESTIMATED'].includes(String(event.eventClassifierCode || '').toUpperCase()) &&
+                    /arrival|discharge|delivered/i.test(event.eventDescription || ''));
             if (plannedEta) {
                 firstEta = `${plannedEta.eventDate} ${plannedEta.eventTime || ''}`.trim();
             } else {
@@ -129,14 +144,11 @@ export async function fetchHapagTracking(trackingNumber) {
                 const latest = actualEvents[actualEvents.length - 1];
                 lastEventDescription = latest.event;
                 lastEventDate = latest.dateText;
-            } else {
-                lastEventDescription = lastEvent.event;
-                lastEventDate = lastEvent.dateText;
+                lastEventLocation = latest.location;
             }
         }
 
         const result = {
-            ok: true,
             trackingNo: reference,
             vesselName: vesselName, 
             originPort: originPort,
@@ -144,7 +156,22 @@ export async function fetchHapagTracking(trackingNumber) {
             etd: etd,
             eta: firstEta,
             priority: 'Normal',
-            status: 'Draft',
+            status: lastEventDescription || 'Tracking details available',
+            location: lastEventLocation || null,
+            lastEvent: lastEventDescription
+                ? `${lastEventDescription}${lastEventDate ? ` • ${lastEventDate}` : ''}`
+                : null,
+            rawDetails: [
+                `Reference: ${reference}`,
+                `From: ${originPort || '-'}`,
+                `To: ${destinationPort || '-'}`,
+                `Latest event: ${lastEventDescription || '-'}${lastEventDate ? ` • ${lastEventDate}` : ''}`,
+                '',
+                'Timeline:',
+                ...allEvents.map((event) => [event.event, event.location, event.dateText, event.vessel]
+                    .filter(Boolean).join(' - ')),
+            ].join('\n').slice(0, 12000),
+            error: null,
             shipmentValue: 0,
             originCountry: '',
             goodsDescription: '',
@@ -168,8 +195,11 @@ export async function fetchHapagTracking(trackingNumber) {
     } catch (error) {
         console.error("Hapag tracking error:", error.message);
         return {
-            ok: false,
-            trackingNo: reference,
+            status: 'No results found',
+            location: null,
+            eta: null,
+            lastEvent: error.response?.data?.message || error.message,
+            rawDetails: null,
             error: error.response?.data?.message || error.message
         };
     }

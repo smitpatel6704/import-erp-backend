@@ -613,6 +613,14 @@ function parseMaerskRenderedText(rawText, url, reference = '') {
     const finalArrival = arrivals[arrivals.length - 1];
     const firstDeparture = departures[0];
     const latestDeparture = departures[departures.length - 1];
+    const latestTimelineEvent = events
+        .map((event, index) => ({
+            event,
+            index,
+            timestamp: maerskDateFromText(event.dateText)?.getTime() || 0,
+        }))
+        .sort((a, b) => a.timestamp - b.timestamp || a.index - b.index)
+        .at(-1)?.event;
     const etaText = getMatch(/Estimated arrival date\s+([\s\S]*?)\s+Latest event/i) || finalArrival?.dateText || '';
     const etdText = firstDeparture?.dateText || '';
     const vesselName = latestDeparture?.vessel?.split('/')[0]?.trim() ||
@@ -624,7 +632,7 @@ function parseMaerskRenderedText(rawText, url, reference = '') {
         firstDeparture?.vessel?.split('/')[1]?.trim() ||
         null;
     const latestEvent = getMatch(/Latest event\s+([\s\S]*?)\s+Note:/i) ||
-        (latestDeparture ? `${latestDeparture.event} • ${latestDeparture.vessel} • ${latestDeparture.dateText}` : '');
+        (latestTimelineEvent ? `${latestTimelineEvent.event} • ${latestTimelineEvent.vessel} • ${latestTimelineEvent.dateText}` : '');
     const { containerSize, containerType } = maerskContainerDetails(rawContainerType);
     const eta = maerskDateFromText(etaText);
     const etd = maerskDateFromText(etdText);

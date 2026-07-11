@@ -42,6 +42,8 @@ const entityIdFromPath = (path) => {
 };
 
 const detailForActivity = ({ action, entity, body, path }) => {
+  if (typeof body?.auditDetails === 'string' && body.auditDetails.trim())
+    return body.auditDetails.trim();
   const data = body?.data?.user || body?.data;
   const value = displayValue(data);
   const actionLabel = action === 'create' ? 'Created' : action === 'update' ? 'Updated' : 'Deleted';

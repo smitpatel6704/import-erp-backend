@@ -296,6 +296,14 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
         const finalArrival = arrivals[arrivals.length - 1];
         const firstDeparture = departures[0];
         const latestDeparture = departures[departures.length - 1];
+        const latestTimelineEvent = events
+            .map((event, index) => ({
+                event,
+                index,
+                timestamp: toDate(event.dateText)?.getTime() || 0,
+            }))
+            .sort((a, b) => a.timestamp - b.timestamp || a.index - b.index)
+            .at(-1)?.event;
 
         const etaText =
             getMatch(/Estimated arrival date\s+([\s\S]*?)\s+(?:Latest event|Note:)/i) ||
@@ -318,8 +326,8 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
         const latestEvent =
             getMatch(/Last updated:.*?(?:ago|Date)\s+(.*?)\s+Note:/i) ||
             getMatch(/Latest event\s+(.*?)\s+Note:/i) ||
-            (latestDeparture
-                ? `${latestDeparture.event} \u00b7 ${latestDeparture.vessel} \u00b7 ${latestDeparture.dateText}`
+            (latestTimelineEvent
+                ? `${latestTimelineEvent.event} \u00b7 ${latestTimelineEvent.vessel} \u00b7 ${latestTimelineEvent.dateText}`
                 : '');
 
         // ── Container size & type ─────────────────────────────────────────
