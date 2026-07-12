@@ -140,7 +140,7 @@ try {
     eta: formatDateForInput(etaText),
     priority: 'Normal',
     status: 'Draft',
-    shipmentValue: 0,
+
     originCountry: '',
     goodsDescription: '',
     notes: latestEvent ? `Latest event: ${latestEvent}` : '',

@@ -8,7 +8,7 @@ const router = Router();
 const reportData = async () => {
   const shipments = await db.query(`
     SELECT s.shipmentNumber, s.blNumber, s.status, s.shippingLine, s.originCountry,
-           s.originPort, s.destinationPort, s.eta, s.shipmentValue, s.currency,
+           s.originPort, s.destinationPort, s.eta, s.currency,
            c.name as importer, COALESCE(e.name, s.exporterCompany) as exporter
     FROM Shipment s
     LEFT JOIN Company c ON s.companyId = c.id
@@ -46,7 +46,7 @@ router.get('/export.xlsx', async (_req, res) => {
       ['Shipping Line', 'shippingLine'], ['Importer', 'importer'], ['Exporter', 'exporter'],
       ['Origin Country', 'originCountry'], ['Origin Port', 'originPort'],
       ['Destination Port', 'destinationPort'], ['ETA', 'eta'],
-      ['Value', 'shipmentValue'], ['Currency', 'currency'],
+      ['Currency', 'currency'],
     ].map(([header, key]) => ({ header, key, width: 20 }));
     shipmentSheet.addRows(data.shipments);
     shipmentSheet.getRow(1).font = { bold: true };
@@ -83,7 +83,7 @@ router.get('/export.pdf', async (_req, res) => {
     for (const shipment of data.shipments) {
       if (pdf.y > 750) pdf.addPage();
       pdf.fontSize(9).text(
-        `${shipment.shipmentNumber} | ${shipment.status} | ${shipment.originPort || '-'} -> ${shipment.destinationPort || '-'} | ${shipment.currency} ${shipment.shipmentValue || 0}`
+        `${shipment.shipmentNumber} | ${shipment.status} | ${shipment.originPort || '-'} -> ${shipment.destinationPort || '-'}`
       );
     }
     pdf.end();

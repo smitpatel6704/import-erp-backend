@@ -245,7 +245,10 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
         await page.waitForFunction(
             () => {
                 const text = document.body.innerText;
-                return text.includes('Bill of Lading number') || text.includes('No results found');
+                return /Bill of Lading number\s+[A-Z0-9]{9}/i.test(text) || 
+                       /[A-Z]{4}\d{7}\s*\|/i.test(text) ||
+                       text.includes("couldn't find") ||
+                       text.includes("No results found");
             },
             { timeout: 90000 },
         );
@@ -256,7 +259,7 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
         const text = await page.locator('body').innerText();
 
         // No results
-        if (text.includes('No results found') && !text.includes('Bill of Lading number')) {
+        if (text.includes('No results found') && text.includes("couldn't find")) {
             return {
                 status: 'No results found',
                 location: null,
@@ -279,7 +282,7 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
         const flatText = text.replace(/\s+/g, ' ').trim();
         const getMatch = (regex) => (flatText.match(regex)?.[1] || '').trim();
 
-        const billOfLading = getMatch(/Bill of Lading number\s+([A-Z0-9]+)/i);
+        const billOfLading = getMatch(/Bill of Lading number\s+([A-Z0-9]{9})/i);
         const originPort = getMatch(/From\s+(\S+)\s+To/i);
         const destinationPort = getMatch(/To\s+(\S+)\s+(?:[A-Z]{4}\d{7}|Last updated)/i);
         const containerNumber = getMatch(/([A-Z]{4}\d{7})\s*\|/i);

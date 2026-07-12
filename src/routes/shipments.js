@@ -33,7 +33,6 @@ const auditFieldLabels = {
     deliveryAddress: 'Delivery Address',
     priority: 'Priority',
     status: 'Status',
-    shipmentValue: 'Shipment Value',
     currency: 'Currency',
     goodsDescription: 'Goods Description',
     internalNotes: 'Internal Notes',
@@ -93,7 +92,7 @@ const upsertShipmentInvoice = async (shipmentId, body) => {
     const values = [
         invoiceNumber,
         body.currency || 'USD',
-        body.shipmentValue || 0,
+        0,
         body.companyId || null,
         body.notes || null,
         new Date(),
@@ -115,7 +114,7 @@ const upsertShipmentInvoice = async (shipmentId, body) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
         invoiceId, invoiceNumber, 'commercial', 'draft', new Date(), 0, 0,
-        body.shipmentValue || 0, body.currency || 'USD', 0, body.companyId || null,
+        0, body.currency || 'USD', 0, body.companyId || null,
         shipmentId, body.notes || null, 1, new Date(), new Date()
     ]);
     return invoiceId;
@@ -273,7 +272,7 @@ router.put('/:id', async (req, res) => {
         const settableFields = [
             'bookingNumber', 'blNumber', 'shippingLine', 'freightForwarder', 'vesselName',
             'voyageNumber', 'originCountry', 'originPort', 'destinationPort', 'warehouseLocation',
-            'deliveryAddress', 'priority', 'status', 'shipmentValue', 'currency', 'companyId',
+            'deliveryAddress', 'priority', 'status', 'currency', 'companyId',
             'tags', 'internalNotes', 'goodsDescription', 'notes', 'exporterCompanyId', 'isActive'
         ];
         for (const field of settableFields) {
@@ -463,7 +462,7 @@ router.get('/', async (req, res) => {
         const countRows = await db.query(`SELECT COUNT(*) as c FROM Shipment WHERE ${whereClause}`, params);
         const total = countRows[0].c;
         const queryParams = [...params, limit, skip];
-        const allowedSort = ['createdAt', 'updatedAt', 'status', 'shipmentValue', 'eta', 'etd'].includes(sortBy) ? sortBy : 'createdAt';
+        const allowedSort = ['createdAt', 'updatedAt', 'status', 'eta', 'etd'].includes(sortBy) ? sortBy : 'createdAt';
         const allowedDir = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
         const shipments = await db.query(`SELECT * FROM Shipment WHERE ${whereClause} ORDER BY ${allowedSort} ${allowedDir} LIMIT ? OFFSET ?`, queryParams);
         const shipmentIds = shipments.map((shipment) => shipment.id);
@@ -558,12 +557,12 @@ router.post('/', async (req, res) => {
         const shipmentNumber = `SHP-${new Date().getFullYear()}-${String(nextNum).padStart(4, '0')}`;
         const id = createId();
         await db.execute(`
-      INSERT INTO Shipment (id, shipmentNumber, bookingNumber, blNumber, shippingLine, freightForwarder, vesselName, voyageNumber, etd, eta, actualArrival, originCountry, originPort, destinationPort, warehouseLocation, deliveryAddress, priority, status, shipmentValue, currency, companyId, exporterCompanyId, tags, internalNotes, goodsDescription, notes, notificationUserIds, isActive, createdAt, updatedAt)
+      INSERT INTO Shipment (id, shipmentNumber, bookingNumber, blNumber, shippingLine, freightForwarder, vesselName, voyageNumber, etd, eta, actualArrival, originCountry, originPort, destinationPort, warehouseLocation, deliveryAddress, priority, status, currency, companyId, exporterCompanyId, tags, internalNotes, goodsDescription, notes, notificationUserIds, isActive, createdAt, updatedAt)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
     `, [
-            id, shipmentNumber, body.bookingNumber || null, body.blNumber || null, body.shippingLine || null, body.freightForwarder || null, body.vesselName || null, body.voyageNumber || null, body.etd ? new Date(body.etd) : null, body.eta ? new Date(body.eta) : null, body.actualArrival ? new Date(body.actualArrival) : null, body.originCountry || null, body.originPort || null, body.destinationPort || null, body.warehouseLocation || null, body.deliveryAddress || null, body.priority || 'normal', body.status || 'draft', body.shipmentValue || 0, body.currency || 'USD', body.companyId || null, body.exporterCompanyId || null, body.tags || null, body.internalNotes || null, body.goodsDescription || null, body.notes || null, JSON.stringify(Array.isArray(body.notificationUserIds) ? body.notificationUserIds : []), body.isActive !== undefined ? (body.isActive ? 1 : 0) : 1, new Date(), new Date()
+            id, shipmentNumber, body.bookingNumber || null, body.blNumber || null, body.shippingLine || null, body.freightForwarder || null, body.vesselName || null, body.voyageNumber || null, body.etd ? new Date(body.etd) : null, body.eta ? new Date(body.eta) : null, body.actualArrival ? new Date(body.actualArrival) : null, body.originCountry || null, body.originPort || null, body.destinationPort || null, body.warehouseLocation || null, body.deliveryAddress || null, body.priority || 'normal', body.status || 'draft', body.currency || 'USD', body.companyId || null, body.exporterCompanyId || null, body.tags || null, body.internalNotes || null, body.goodsDescription || null, body.notes || null, JSON.stringify(Array.isArray(body.notificationUserIds) ? body.notificationUserIds : []), body.isActive !== undefined ? (body.isActive ? 1 : 0) : 1, new Date(), new Date()
         ]);
-        for (const container of body.containers || []) {
+        await Promise.all((body.containers || []).map(async (container) => {
             await db.execute(`
               INSERT INTO Container (
                 id, containerNumber, containerType, containerSize, sealNumber, stuffingType,
@@ -578,9 +577,9 @@ router.post('/', async (req, res) => {
                 container.currentLocation || null, container.goodsDescription || null,
                 id, 1, new Date(), new Date()
             ]);
-        }
+        }));
         await upsertShipmentInvoice(id, body);
-        for (const item of body.shipmentItems || body.items || []) {
+        await Promise.all((body.shipmentItems || body.items || []).map(async (item) => {
             await db.execute(`
               INSERT INTO ShipmentItem (
                 id, shipmentId, productId, containerId, description, quantity, unitPrice,
@@ -592,15 +591,15 @@ router.post('/', async (req, res) => {
                 item.currency || body.currency || 'USD', item.grossWeight || 0,
                 item.netWeight || 0, item.cbmVolume || 0, item.packingType || null
             ]);
-        }
+        }));
         if (Array.isArray(body.requiredDocumentIds)) {
-            for (const checklistId of body.requiredDocumentIds) {
+            await Promise.all(body.requiredDocumentIds.map(async (checklistId) => {
                 await db.execute(`
                   INSERT INTO ShipmentDocument (
                     id, shipmentId, checklistId, status, createdAt, updatedAt
                   ) VALUES (?, ?, ?, 'pending', ?, ?)
                 `, [createId(), id, checklistId, new Date(), new Date()]);
-            }
+            }));
         }
         const shipments = await db.query('SELECT * FROM Shipment WHERE id = ?', [id]);
         const shipment = shipments[0];

@@ -149,7 +149,8 @@ export async function authenticate(req, res, next) {
     req.user = user;
     return next();
   } catch (error) {
-    return res.status(401).json({ error: 'Invalid session' });
+    console.error('[Auth Error]', error);
+    return res.status(500).json({ error: 'Internal server error during authentication' });
   }
 }
 

@@ -113,16 +113,18 @@ router.get('/', async (req, res) => {
         const allowedSort = ['createdAt', 'updatedAt', 'name', 'creditLimit'].includes(sortBy) ? sortBy : 'createdAt';
         const allowedDir = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
         const companies = await db.query(`SELECT * FROM Company WHERE ${whereClause} ORDER BY ${allowedSort} ${allowedDir} LIMIT ? OFFSET ?`, [...params, limit, skip]);
-        for (const c of companies) {
-            const shipmentsCount = await db.query('SELECT COUNT(*) as c FROM Shipment WHERE companyId = ?', [c.id]);
-            const invoicesCount = await db.query('SELECT COUNT(*) as c FROM Invoice WHERE companyId = ?', [c.id]);
-            const productsCount = await db.query('SELECT COUNT(*) as c FROM Product WHERE companyId = ?', [c.id]);
+        await Promise.all(companies.map(async (c) => {
+            const [shipmentsCount, invoicesCount, productsCount] = await Promise.all([
+                db.query('SELECT COUNT(*) as c FROM Shipment WHERE companyId = ?', [c.id]),
+                db.query('SELECT COUNT(*) as c FROM Invoice WHERE companyId = ?', [c.id]),
+                db.query('SELECT COUNT(*) as c FROM Product WHERE companyId = ?', [c.id])
+            ]);
             c._count = {
                 shipments: shipmentsCount[0].c,
                 invoices: invoicesCount[0].c,
                 products: productsCount[0].c
             };
-        }
+        }));
         // In the frontend, the component probably expects the structure we used in the other migrated files:
         return res.json({ data: companies, pagination: { total, page, limit } });
     }

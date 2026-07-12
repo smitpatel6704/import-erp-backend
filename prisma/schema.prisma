@@ -110,7 +110,7 @@ model Shipment {
   deliveryAddress   String?
   priority          String            @default("normal")
   status            String            @default("draft")
-  shipmentValue     Float             @default(0)
+
   currency          String            @default("USD")
   companyId         String?
   tags              String?

@@ -27,7 +27,7 @@ const schemaIdentifiers = [
     'passwordSetupExpiresAt', 'passwordSetupTokenHash', 'paymentDate', 'permissions',
     'paymentMethod', 'paymentStatus', 'podStatus', 'productId', 'referenceNumber', 'rejectedReason', 'requireOtp',
     'routeFrom', 'routeTo', 'sealNumber', 'shipmentDocuments', 'shipmentId', 'shipmentItems',
-    'shipmentNumber', 'shipmentStage', 'shipmentValue', 'shippingAddress', 'shippingLine',
+    'shipmentNumber', 'shipmentStage', 'shippingAddress', 'shippingLine',
     'storageDays', 'stuffingType', 'taxAmount', 'taxRate', 'timelineEvents', 'totalAmount',
     'totalValue',
     'taxNumber', 'bankDetails', 'customFields', 'documentIds', 'transactionDate', 'transportVendor',
@@ -100,16 +100,39 @@ const prepareQuery = (sql, params = []) => {
         values: normalizedParams,
     };
 };
+const queryQueue = [];
+let activeQueries = 0;
+const MAX_CONCURRENT = 5;
+
+const runWithLimit = (fn) => new Promise((resolve, reject) => {
+    queryQueue.push({ fn, resolve, reject });
+    processQueue();
+});
+
+const processQueue = async () => {
+    if (activeQueries >= MAX_CONCURRENT || queryQueue.length === 0) return;
+    activeQueries++;
+    const { fn, resolve, reject } = queryQueue.shift();
+    try {
+        resolve(await fn());
+    } catch (err) {
+        reject(err);
+    } finally {
+        activeQueries--;
+        processQueue();
+    }
+};
+
 // Helper for type-safe query results
 export const db = {
     query: async (sql, params) => {
         const { text, values } = prepareQuery(sql, params);
-        const { rows } = await pool.query(text, values);
+        const { rows } = await runWithLimit(() => pool.query(text, values));
         return rows;
     },
     execute: async (sql, params) => {
         const { text, values } = prepareQuery(sql, params);
-        const result = await pool.query(text, values);
+        const result = await runWithLimit(() => pool.query(text, values));
         return result;
     }
 };

@@ -172,7 +172,7 @@ export async function fetchHapagTracking(trackingNumber) {
                     .filter(Boolean).join(' - ')),
             ].join('\n').slice(0, 12000),
             error: null,
-            shipmentValue: 0,
+
             originCountry: '',
             goodsDescription: '',
             notes: lastEventDescription ? `Latest event: ${lastEventDescription} at ${lastEventDate}` : '',

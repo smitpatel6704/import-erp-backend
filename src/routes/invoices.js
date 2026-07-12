@@ -214,7 +214,7 @@ router.post('/', async (req, res) => {
             new Date()
         ]);
         if (body.items && Array.isArray(body.items) && body.items.length > 0) {
-            for (const item of body.items) {
+            await Promise.all(body.items.map(async (item) => {
                 const itemId = createId();
                 await db.execute(`
           INSERT INTO InvoiceItem (
@@ -231,7 +231,7 @@ router.post('/', async (req, res) => {
                     item.taxRate || 0,
                     item.total || 0
                 ]);
-            }
+            }));
         }
         const invoice = await db.query(`
       SELECT i.*, 
