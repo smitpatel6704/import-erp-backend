@@ -22,6 +22,7 @@ model User {
   department    String?
   phone         String?
   permissions   Json           @default("[]")
+  preferences   Json           @default("{}")
   isActive      Boolean        @default(true)
   requireOtp    Boolean        @default(true)
   tokenVersion  Int            @default(0)

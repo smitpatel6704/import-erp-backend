@@ -48,6 +48,7 @@ const publicUser = (user) => ({
   department: user.department,
   phone: user.phone,
   permissions: normalizePermissions(user.permissions),
+  preferences: typeof user.preferences === 'string' ? JSON.parse(user.preferences) : user.preferences || {},
   isActive: user.isActive,
 });
 
@@ -309,6 +310,11 @@ router.put('/me', authenticate, async (req, res) => {
     const phone = req.body.phone === undefined ? req.user.phone : String(req.body.phone || '').trim();
     const department = req.body.department === undefined ? req.user.department : String(req.body.department || '').trim();
     const avatar = req.body.avatar === undefined ? req.user.avatar : String(req.body.avatar || '').trim();
+    let preferencesStr = req.user.preferences;
+    if (req.body.preferences !== undefined) {
+      preferencesStr = typeof req.body.preferences === 'object' ? JSON.stringify(req.body.preferences) : req.body.preferences;
+    }
+
 
     if (!name || !email)
       return res.status(400).json({ error: 'Name and email are required' });
@@ -322,7 +328,7 @@ router.put('/me', authenticate, async (req, res) => {
     const now = new Date();
     await db.execute(`
       UPDATE User
-      SET name = ?, email = ?, phone = ?, department = ?, avatar = ?, updatedAt = ?
+      SET name = ?, email = ?, phone = ?, department = ?, avatar = ?, preferences = ?::jsonb, updatedAt = ?
       WHERE id = ?
     `, [
       name,
@@ -330,6 +336,7 @@ router.put('/me', authenticate, async (req, res) => {
       phone || null,
       department || null,
       avatar || null,
+      preferencesStr,
       now,
       req.user.id,
     ]);

@@ -63,11 +63,11 @@ const shipmentAuditDetails = (before, after, body) => {
                 ? after.exporterCompany?.name
                 : after[field];
         if (auditValue(oldValue) === auditValue(newValue)) return [];
-        return [`${auditFieldLabels[field]} changed from "${auditValue(oldValue)}" → "${auditValue(newValue)}"`];
+        return [`${auditFieldLabels[field]}: "${auditValue(oldValue)}" → "${auditValue(newValue)}"`];
     });
     const shipmentNumber = after.shipmentNumber || before.shipmentNumber || before.blNumber || after.id;
     return changes.length
-        ? `Updated Shipment ${shipmentNumber}: ${changes.join(', ')}.`
+        ? `Updated Shipment ${shipmentNumber} — Changes: ${changes.join('; ')}.`
         : `Updated Shipment ${shipmentNumber}`;
 };
 
@@ -313,6 +313,7 @@ router.put('/:id', async (req, res) => {
         await syncShipmentRequiredDocuments(id, body.requiredDocumentIds);
         const updatedShipments = await db.query('SELECT * FROM Shipment WHERE id = ?', [id]);
         const shipment = updatedShipments[0];
+        shipment.invoiceNumber = normalizeInvoiceNumber(body.invoiceNumber) || null;
         if (shipment && shipment.companyId) {
             const comps = await db.query('SELECT id, name FROM Company WHERE id = ?', [shipment.companyId]);
             shipment.company = comps[0] || null;
@@ -418,9 +419,19 @@ router.get('/', async (req, res) => {
             whereClause += ` AND status IN (${statuses.map(() => '?').join(',')})`;
             params.push(...statuses);
         }
-        if (priority) {
-            whereClause += ' AND priority = ?';
-            params.push(priority);
+        const containerType = req.query.containerType || '';
+        const containerSize = req.query.containerSize || '';
+        if (containerType || containerSize) {
+            whereClause += ` AND EXISTS (SELECT 1 FROM Container c WHERE c.shipmentId = Shipment.id AND c.isActive = 1`;
+            if (containerType) {
+                whereClause += ` AND c.containerType = ?`;
+                params.push(containerType);
+            }
+            if (containerSize) {
+                whereClause += ` AND c.containerSize = ?`;
+                params.push(containerSize);
+            }
+            whereClause += `)`;
         }
         if (companyId) {
             whereClause += ' AND companyId = ?';
@@ -471,6 +482,12 @@ router.get('/', async (req, res) => {
               FROM Container
               WHERE shipmentId IN (${placeholders})
             `, shipmentIds);
+            const invoices = await db.query(`
+              SELECT shipmentId, invoiceNumber, createdAt
+              FROM Invoice
+              WHERE shipmentId IN (${placeholders}) AND isActive = 1
+              ORDER BY createdAt DESC
+            `, shipmentIds);
             const countTables = [
                 ['containers', 'Container'],
                 ['documents', 'Document'],
@@ -492,6 +509,11 @@ router.get('/', async (req, res) => {
                 current.push(container);
                 containersByShipmentId.set(container.shipmentId, current);
             }
+            const invoiceNumberByShipmentId = new Map();
+            for (const invoice of invoices) {
+                if (!invoiceNumberByShipmentId.has(invoice.shipmentId))
+                    invoiceNumberByShipmentId.set(invoice.shipmentId, invoice.invoiceNumber);
+            }
             const countsByTable = new Map(countTables.map(([key], index) => {
                 const rowsByShipmentId = new Map(countRows[index].map((row) => [row.shipmentId, Number(row.c || 0)]));
                 return [key, rowsByShipmentId];
@@ -500,6 +522,7 @@ router.get('/', async (req, res) => {
                 shipment.company = shipment.companyId ? companyById.get(shipment.companyId) || null : null;
                 shipment.exporterCompany = shipment.exporterCompanyId ? exporterCompanyById.get(shipment.exporterCompanyId) || null : null;
                 shipment.containers = containersByShipmentId.get(shipment.id) || [];
+                shipment.invoiceNumber = invoiceNumberByShipmentId.get(shipment.id) || null;
                 shipment._count = {
                     containers: countsByTable.get('containers')?.get(shipment.id) || 0,
                     documents: countsByTable.get('documents')?.get(shipment.id) || 0,
@@ -581,6 +604,7 @@ router.post('/', async (req, res) => {
         }
         const shipments = await db.query('SELECT * FROM Shipment WHERE id = ?', [id]);
         const shipment = shipments[0];
+        shipment.invoiceNumber = normalizeInvoiceNumber(body.invoiceNumber) || null;
         if (shipment.companyId) {
             const comps = await db.query('SELECT id, name FROM Company WHERE id = ?', [shipment.companyId]);
             shipment.company = comps[0] || null;

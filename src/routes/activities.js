@@ -14,14 +14,17 @@ const shipmentActionLabel = (action) => {
 };
 
 const buildShipmentDetails = (activity, shipment) => {
-    if (activity.details && /\bchanged from\b/i.test(activity.details))
+    if (activity.details && (/\bchanged from\b/i.test(activity.details) || /\bChanges:\s/i.test(activity.details)))
         return activity.details;
     if (!shipment)
         return activity.details;
-    const names = [shipment.importerName, shipment.exporterName].filter(Boolean);
-    const nameText = names.length ? ` (${names.join(' -> ')})` : '';
+    const parties = [
+        shipment.importerName ? `Importer: ${shipment.importerName}` : null,
+        shipment.exporterName ? `Exporter: ${shipment.exporterName}` : null,
+    ].filter(Boolean);
+    const partyText = parties.length ? ` — ${parties.join(' | ')}` : '';
     const shipmentNumber = shipment.shipmentNumber || shipment.blNumber || activity.entityId;
-    return `${shipmentActionLabel(activity.action)}${shipmentNumber ? ` ${shipmentNumber}` : ''}${nameText}`;
+    return `${shipmentActionLabel(activity.action)}${shipmentNumber ? ` ${shipmentNumber}` : ''}${partyText}`;
 };
 
 // GET /api/activities - List activity logs with filtering, sorting, pagination
