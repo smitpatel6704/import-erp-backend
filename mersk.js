@@ -56,7 +56,18 @@ try {
 
   await page.waitForTimeout(3000);
 
-  const text = await page.locator('body').innerText();
+const text = await page.locator('body').innerText();
+
+await fs.writeFile("page.txt", text);
+await fs.writeFile("page.html", await page.content());
+
+await page.screenshot({
+  path: "page.png",
+  fullPage: true
+});
+
+console.log("TITLE:", await page.title());
+console.log("URL:", page.url());
 
   if (text.includes('No results found') && !text.includes('Bill of Lading number')) {
     console.log(
