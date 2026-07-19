@@ -66,8 +66,6 @@ await page.screenshot({
   fullPage: true
 });
 
-console.log("TITLE:", await page.title());
-console.log("URL:", page.url());
 
   if (text.includes('No results found') && !text.includes('Bill of Lading number')) {
     console.log(
