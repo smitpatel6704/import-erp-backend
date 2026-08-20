@@ -4,6 +4,7 @@ import { db, pool } from '../db.js';
 import { createId } from '@paralleldrive/cuid2';
 import { getCronDashboardStatus, runCronJobById } from '../services/cron-jobs.js';
 import { setJobEnabled } from '../services/job-settings.js';
+import { setCronEmailRecipients } from '../services/notifications.js';
 const router = Router();
 const BRAND_LOGO_KEYS = {
     light: 'brand_logo_light',
@@ -59,6 +60,19 @@ router.put('/cron/jobs/:id', async (req, res) => {
     }
     catch (error) {
         return res.status(error?.status || 500).json({ error: error?.message || 'Failed to update job' });
+    }
+});
+
+// PUT /api/settings/cron/email-recipients
+router.put('/cron/email-recipients', async (req, res) => {
+    try {
+        if (!Array.isArray(req.body?.userIds))
+            return res.status(400).json({ error: 'userIds must be an array' });
+        const result = await setCronEmailRecipients(req.body.userIds, req.user?.id || null);
+        return res.json({ data: result });
+    }
+    catch (error) {
+        return res.status(error?.status || 500).json({ error: error?.message || 'Failed to save cron email recipients' });
     }
 });
 

@@ -28,6 +28,40 @@ const normalizeUserIds = (value) => {
   }
 };
 
+const CRON_RECIPIENTS_KEY = 'cron_email_recipient_user_ids';
+
+export async function getCronEmailRecipientSettings() {
+  const [setting] = await db.query('SELECT "value" FROM "AppSetting" WHERE "key" = ?', [CRON_RECIPIENTS_KEY]);
+  const users = await db.query('SELECT id, name, email, role FROM User WHERE isActive = 1 AND email IS NOT NULL ORDER BY name');
+  return {
+    selectedUserIds: setting ? normalizeUserIds(setting.value) : users.filter((user) => ['admin', 'super_admin'].includes(user.role)).map((user) => user.id),
+    users,
+    explicitlyConfigured: Boolean(setting),
+  };
+}
+
+export async function setCronEmailRecipients(userIds, userId = null) {
+  const selectedUserIds = [...new Set((Array.isArray(userIds) ? userIds : []).map(String).filter(Boolean))];
+  if (selectedUserIds.length) {
+    const validUsers = await db.query(
+      `SELECT id FROM User WHERE isActive = 1 AND email IS NOT NULL AND id IN (${selectedUserIds.map(() => '?').join(',')})`,
+      selectedUserIds,
+    );
+    const validIds = new Set(validUsers.map((user) => user.id));
+    if (selectedUserIds.some((id) => !validIds.has(id))) {
+      const error = new Error('One or more selected email users are invalid or inactive');
+      error.status = 400;
+      throw error;
+    }
+  }
+  await db.execute(`
+    INSERT INTO "AppSetting" ("key", "value", "updatedBy", "updatedAt") VALUES (?, ?, ?, NOW())
+    ON CONFLICT ("key") DO UPDATE
+    SET "value" = EXCLUDED."value", "updatedBy" = EXCLUDED."updatedBy", "updatedAt" = NOW()
+  `, [CRON_RECIPIENTS_KEY, JSON.stringify(selectedUserIds), userId]);
+  return { selectedUserIds };
+}
+
 export async function notificationRecipients(shipmentId, options = {}) {
   const rows = await db.query(`
     SELECT c.email AS importerEmail, e.email AS exporterEmail, s.notificationUserIds
@@ -36,19 +70,21 @@ export async function notificationRecipients(shipmentId, options = {}) {
     LEFT JOIN ExporterCompany e ON s.exporterCompanyId = e.id
     WHERE s.id = ?
   `, [shipmentId]);
-  const admins = await db.query(`SELECT email FROM User WHERE isActive = 1 AND role IN ('admin', 'super_admin')`);
+  const admins = await db.query(`SELECT id, email FROM User WHERE isActive = 1 AND role IN ('admin', 'super_admin')`);
   const selectedUserIds = normalizeUserIds(rows[0]?.notificationUserIds);
-  const selectedUsers = selectedUserIds.length
+  const cronSettings = options.forCron ? await getCronEmailRecipientSettings() : null;
+  const effectiveUserIds = options.forCron ? cronSettings.selectedUserIds : selectedUserIds;
+  const selectedUsers = effectiveUserIds.length
     ? await db.query(
-      `SELECT email FROM User WHERE isActive = 1 AND id IN (${selectedUserIds.map(() => '?').join(',')})`,
-      selectedUserIds,
+      `SELECT email FROM User WHERE isActive = 1 AND id IN (${effectiveUserIds.map(() => '?').join(',')})`,
+      effectiveUserIds,
     )
     : [];
   return normalizeRecipients([
     options.includeCompanyContacts === false ? null : rows[0]?.importerEmail,
     options.includeCompanyContacts === false ? null : rows[0]?.exporterEmail,
-    process.env.NOTIFICATION_EMAIL_TO,
-    ...admins.map((admin) => admin.email),
+    options.forCron && cronSettings?.explicitlyConfigured ? null : process.env.NOTIFICATION_EMAIL_TO,
+    ...(options.forCron ? [] : admins.map((admin) => admin.email)),
     ...selectedUsers.map((user) => user.email),
   ]);
 }
@@ -155,7 +191,7 @@ export async function runNotificationReminders() {
       priority: 'high',
       actionUrl: `/shipments/${shipment.id}`,
       emailEnabled: true,
-      recipients: await notificationRecipients(shipment.id, { includeCompanyContacts: false }),
+      recipients: await notificationRecipients(shipment.id, { includeCompanyContacts: false, forCron: true }),
       dedupeKey: `eta-upcoming:${shipment.id}:${dateKey}:2`,
     });
     if (!result.duplicate) created += 1;
@@ -179,7 +215,7 @@ export async function runNotificationReminders() {
       priority: days === 0 ? 'high' : 'normal',
       actionUrl: `/shipments/${shipment.id}`,
       emailEnabled: true,
-      recipients: await notificationRecipients(shipment.id),
+      recipients: await notificationRecipients(shipment.id, { includeCompanyContacts: false, forCron: true }),
       dedupeKey: `eta:${shipment.id}:${dateKey}:${days}`,
     });
     if (!result.duplicate) created += 1;
@@ -204,7 +240,7 @@ export async function runNotificationReminders() {
       priority: 'high',
       actionUrl: `/shipments/${shipment.id}/documents`,
       emailEnabled: true,
-      recipients: await notificationRecipients(shipment.id),
+      recipients: await notificationRecipients(shipment.id, { includeCompanyContacts: false, forCron: true }),
       dedupeKey: `documents:${shipment.id}:${dateKey}`,
     });
     if (!result.duplicate) created += 1;

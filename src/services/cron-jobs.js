@@ -1,6 +1,6 @@
 import { db } from '../db.js';
 import { getEmailConfiguration } from './email.js';
-import { runNotificationReminders } from './notifications.js';
+import { getCronEmailRecipientSettings, runNotificationReminders } from './notifications.js';
 import { syncDueShipmentTrackings } from './tracking.js';
 import { getJobEnabledStates, isJobEnabled } from './job-settings.js';
 
@@ -104,9 +104,11 @@ export const getCronDashboardStatus = async () => {
   const settings = await readSettings(keys);
   const enabledStates = await getJobEnabledStates();
   const emailConfig = getEmailConfiguration();
+  const cronEmailRecipients = await getCronEmailRecipientSettings();
   return {
     cronSecretConfigured: Boolean(process.env.CRON_SECRET),
     email: emailConfig,
+    cronEmailRecipients,
     jobs: JOBS.map((job) => {
       const keys = jobKeys(job.id);
       const result = parseJson(settings[keys.result], null);
