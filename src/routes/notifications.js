@@ -2,6 +2,7 @@ import { db } from '../db.js';
 import { Router } from 'express';
 import { createNotification, runNotificationReminders, sendNotificationEmail } from '../services/notifications.js';
 import { getEmailConfiguration, verifyEmailConnection } from '../services/email.js';
+import { isJobEnabled } from '../services/job-settings.js';
 const router = Router();
 router.get('/email/status', (_req, res) => {
     return res.json({ data: getEmailConfiguration() });
@@ -21,6 +22,8 @@ const runReminders = async (req, res) => {
     try {
         if (process.env.CRON_SECRET && req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`)
             return res.status(401).json({ error: 'Unauthorized' });
+        if (!(await isJobEnabled('notification_reminders')))
+            return res.status(409).json({ error: 'Notification reminder job is switched off' });
         return res.json({ data: await runNotificationReminders() });
     }
     catch (error) {

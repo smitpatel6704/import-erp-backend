@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createId } from '@paralleldrive/cuid2';
 import { createNotification, notificationRecipients } from '../services/notifications.js';
+import { isJobEnabled } from '../services/job-settings.js';
 import {
     fetchCarrierTracking,
     syncShipmentTracking,
@@ -183,7 +184,7 @@ router.post('/tracking/lookup', async (req, res) => {
             return res.status(400).json({ error: 'Tracking number and shipping line are required' });
         const carrier = trackingCarrierLabel(shippingLine);
         if (!carrier)
-            return res.status(400).json({ error: 'Only Maersk, MSC, Evergreen, and Hapag-Lloyd tracking are supported' });
+            return res.status(400).json({ error: 'Only Maersk, MSC, Evergreen, Hapag-Lloyd, and COSCO tracking are supported' });
         if (carrier === 'Maersk') {
             const result = await lookupMerskTracking(trackingNumber);
             return res.json({ data: result });
@@ -321,7 +322,8 @@ router.put('/:id', async (req, res) => {
             const exps = await db.query('SELECT id, name FROM ExporterCompany WHERE id = ?', [shipment.exporterCompanyId]);
             shipment.exporterCompany = exps[0] || null;
         }
-        if (body.status && oldShipment && oldShipment.status !== body.status) {
+        const workflowEnabled = await isJobEnabled('workflow_automations');
+        if (workflowEnabled && body.status && oldShipment && oldShipment.status !== body.status) {
             const statusLabels = {
                 draft: 'Shipment Created', booking_confirmed: 'Booking Confirmed', at_pol: 'Container Arrived at POL',
                 vessel_departed: 'Vessel Departed', in_transit: 'In Transit', at_pod: 'Arrived at POD',
@@ -358,7 +360,7 @@ router.put('/:id', async (req, res) => {
             (oldShipment.bookingNumber !== shipment.bookingNumber ||
                 oldShipment.blNumber !== shipment.blNumber ||
                 oldShipment.shippingLine !== shipment.shippingLine);
-        if (trackingIdentityChanged &&
+        if (workflowEnabled && trackingIdentityChanged &&
             trackingCarrierLabel(shipment.shippingLine) &&
             (shipment.blNumber || shipment.bookingNumber)) {
             Object.assign(shipment, await syncShipmentTracking(id, true));
@@ -617,7 +619,7 @@ router.post('/', async (req, res) => {
       INSERT INTO TimelineEvent (id, shipmentId, event, description, location, timestamp)
       VALUES (?, ?, ?, ?, ?, ?)
     `, [tlId, id, 'Shipment Created', 'Draft shipment created in the system', body.originPort || 'N/A', new Date()]);
-        if (trackingCarrierLabel(shipment.shippingLine) &&
+        if (await isJobEnabled('workflow_automations') && trackingCarrierLabel(shipment.shippingLine) &&
             (shipment.blNumber || shipment.bookingNumber || (body.containers || []).some((container) => container.containerNumber))) {
             Object.assign(shipment, await syncShipmentTracking(id, true));
         }

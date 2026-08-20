@@ -79,6 +79,7 @@ const statements = [
     "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
   )`,
   ...[
+    ['default-shipping-line-cosco', 'COSCO', 'COSCO'],
     ['default-shipping-line-evergreen', 'Evergreen', 'EVERGREEN'],
     ['default-shipping-line-hapag-lloyd', 'Hapag-Lloyd', 'Hapag-Lloyd'],
     ['default-shipping-line-maersk', 'Maersk', 'Maersk'],
@@ -89,6 +90,12 @@ const statements = [
       SELECT 1 FROM "SettingOption"
       WHERE "category" = 'shipping_line' AND LOWER(REGEXP_REPLACE("value", '[^a-zA-Z0-9]+', '', 'g')) = LOWER(REGEXP_REPLACE('${value}', '[^a-zA-Z0-9]+', '', 'g'))
     )`),
+  `INSERT INTO "SettingOption" ("id", "category", "value", "label", "isActive")
+    SELECT 'default-container-size-20ft', 'container_size', '20FT', '20FT', TRUE
+    WHERE NOT EXISTS (
+      SELECT 1 FROM "SettingOption"
+      WHERE "category" = 'container_size' AND LOWER("value") = '20ft'
+    )`,
 ];
 
 export async function ensureFeatureSchema() {

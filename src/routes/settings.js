@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer';
 import { db, pool } from '../db.js';
 import { createId } from '@paralleldrive/cuid2';
 import { getCronDashboardStatus, runCronJobById } from '../services/cron-jobs.js';
+import { setJobEnabled } from '../services/job-settings.js';
 const router = Router();
 const BRAND_LOGO_KEYS = {
     light: 'brand_logo_light',
@@ -10,7 +11,7 @@ const BRAND_LOGO_KEYS = {
     collapsed: 'brand_logo_collapsed',
 };
 const MAX_LOGO_DATA_URL_LENGTH = 3 * 1024 * 1024;
-const SYSTEM_SHIPPING_LINES = new Set(['evergreen', 'hapaglloyd', 'maersk', 'msc']);
+const SYSTEM_SHIPPING_LINES = new Set(['cosco', 'evergreen', 'hapaglloyd', 'maersk', 'msc']);
 const normalizeLogoMode = (mode) => (mode === 'collapsed' ? 'collapsed' : mode === 'dark' ? 'dark' : 'light');
 const normalizeShippingLine = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 const isSupportedLogoDataUrl = (value) => {
@@ -45,6 +46,19 @@ router.post('/cron/run', async (req, res) => {
     catch (error) {
         console.error('Settings cron run POST error:', error);
         return res.status(error?.status || 500).json({ error: error?.message || 'Failed to run cron job' });
+    }
+});
+
+// PUT /api/settings/cron/jobs/:id
+router.put('/cron/jobs/:id', async (req, res) => {
+    try {
+        if (typeof req.body?.enabled !== 'boolean')
+            return res.status(400).json({ error: 'enabled must be a boolean' });
+        const result = await setJobEnabled(req.params.id, req.body.enabled, req.user?.id || null);
+        return res.json({ data: result });
+    }
+    catch (error) {
+        return res.status(error?.status || 500).json({ error: error?.message || 'Failed to update job' });
     }
 });
 

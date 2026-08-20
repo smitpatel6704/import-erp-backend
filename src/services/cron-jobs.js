@@ -2,6 +2,7 @@ import { db } from '../db.js';
 import { getEmailConfiguration } from './email.js';
 import { runNotificationReminders } from './notifications.js';
 import { syncDueShipmentTrackings } from './tracking.js';
+import { getJobEnabledStates, isJobEnabled } from './job-settings.js';
 
 const jobKeys = (id) => ({
   startedAt: `cron_${id}_last_started_at`,
@@ -14,8 +15,8 @@ const JOBS = [
     id: 'daily',
     name: 'Daily operations cron',
     path: '/api/cron/daily',
-    schedule: '0 0 * * *',
-    timezone: 'UTC',
+    schedule: '30 18 * * * (12:00 AM IST)',
+    timezone: 'Asia/Kolkata',
     source: 'Vercel Cron',
     runnable: true,
     description: 'Runs all daily backend automations together.',
@@ -24,21 +25,19 @@ const JOBS = [
     id: 'carrier_tracking',
     name: 'Carrier tracking fetch/scrape',
     path: 'backend scheduler',
-    schedule: 'Every 6 hours',
-    timezone: 'Server local',
-    source: 'setInterval + daily cron',
+    schedule: 'Once daily at 12:00 AM',
+    timezone: 'Asia/Kolkata / server local',
+    source: 'midnight timer + daily cron',
     runnable: true,
-    description: 'Fetches/scrapes Maersk, MSC, Evergreen, and Hapag-Lloyd tracking data for due shipments.',
+    description: 'Fetches Maersk, MSC, Evergreen, Hapag-Lloyd, and COSCO tracking data for due shipments.',
   },
   {
     id: 'notification_reminders',
     name: 'Notification and email reminders',
     path: 'backend scheduler',
-    schedule: process.env.NOTIFICATION_SCAN_INTERVAL_MS
-      ? `Every ${Number(process.env.NOTIFICATION_SCAN_INTERVAL_MS)} ms`
-      : 'Every 6 hours',
-    timezone: 'Server local',
-    source: 'setInterval + daily cron',
+    schedule: 'Once daily at 12:00 AM',
+    timezone: 'Asia/Kolkata / server local',
+    source: 'midnight timer + daily cron',
     runnable: true,
     description: 'Creates ETA and pending-document reminders. High priority reminders are sent by email when SMTP is configured.',
   },
@@ -66,8 +65,11 @@ const JOBS = [
 
 let notificationTimer;
 let carrierTrackingTimer;
-const TRACKING_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const notificationIntervalMs = () => Number(process.env.NOTIFICATION_SCAN_INTERVAL_MS || 6 * 60 * 60 * 1000);
+const millisecondsUntilNextMidnight = (now = new Date()) => {
+  const nextMidnight = new Date(now);
+  nextMidnight.setHours(24, 0, 0, 0);
+  return nextMidnight.getTime() - now.getTime();
+};
 
 const upsertSetting = async (key, value, userId = null) => {
   await db.execute(`
@@ -100,6 +102,7 @@ const parseJson = (value, fallback = null) => {
 export const getCronDashboardStatus = async () => {
   const keys = JOBS.flatMap((job) => Object.values(jobKeys(job.id)));
   const settings = await readSettings(keys);
+  const enabledStates = await getJobEnabledStates();
   const emailConfig = getEmailConfiguration();
   return {
     cronSecretConfigured: Boolean(process.env.CRON_SECRET),
@@ -110,7 +113,8 @@ export const getCronDashboardStatus = async () => {
       return {
         ...job,
         method: job.id === 'daily' ? 'POST' : null,
-        enabled: job.id === 'email_delivery' ? emailConfig.configured : true,
+        enabled: enabledStates[job.id] && (job.id !== 'email_delivery' || emailConfig.configured),
+        configured: job.id !== 'email_delivery' || emailConfig.configured,
         lastStartedAt: settings[keys.startedAt] || null,
         lastFinishedAt: settings[keys.finishedAt] || null,
         lastStatus: result?.status || null,
@@ -123,6 +127,9 @@ export const getCronDashboardStatus = async () => {
 };
 
 const runTrackedJob = async (id, handler, { triggeredBy = 'manual', userId = null } = {}) => {
+  if (!(await isJobEnabled(id))) {
+    return { status: 'disabled', skipped: true, triggeredBy, jobId: id };
+  }
   const keys = jobKeys(id);
   const startedAt = new Date();
   await upsertSetting(keys.startedAt, startedAt.toISOString(), userId);
@@ -191,23 +198,25 @@ export const runCronJobById = async (jobId, options = {}) => {
 
 export function startCronJobSchedulers() {
   if (!carrierTrackingTimer) {
-    void runCarrierTrackingJob({ triggeredBy: 'startup' }).catch((error) => {
-      console.error('Initial carrier tracking sync failed:', error);
-    });
-    carrierTrackingTimer = setInterval(() => {
-      void runCarrierTrackingJob({ triggeredBy: 'scheduler' }).catch((error) => {
-        console.error('Scheduled carrier tracking sync failed:', error);
-      });
-    }, TRACKING_INTERVAL_MS);
+    const scheduleNextCarrierTrackingRun = () => {
+      carrierTrackingTimer = setTimeout(async () => {
+        await runCarrierTrackingJob({ triggeredBy: 'scheduler' }).catch((error) => {
+          console.error('Scheduled carrier tracking sync failed:', error);
+        });
+        scheduleNextCarrierTrackingRun();
+      }, millisecondsUntilNextMidnight());
+    };
+    scheduleNextCarrierTrackingRun();
   }
   if (!notificationTimer) {
-    void runNotificationReminderJob({ triggeredBy: 'startup' }).catch((error) => {
-      console.error('Notification reminder scan failed:', error);
-    });
-    notificationTimer = setInterval(() => {
-      void runNotificationReminderJob({ triggeredBy: 'scheduler' }).catch((error) => {
-        console.error('Notification reminder scan failed:', error);
-      });
-    }, notificationIntervalMs());
+    const scheduleNextNotificationRun = () => {
+      notificationTimer = setTimeout(async () => {
+        await runNotificationReminderJob({ triggeredBy: 'scheduler' }).catch((error) => {
+          console.error('Notification reminder scan failed:', error);
+        });
+        scheduleNextNotificationRun();
+      }, millisecondsUntilNextMidnight());
+    };
+    scheduleNextNotificationRun();
   }
 }

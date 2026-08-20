@@ -35,7 +35,7 @@ screen can verify the SMTP connection and send or retry individual emails.
 - `GET /api/maersk/status` - Maersk API configuration status without exposing credentials
 - `GET /api/maersk/vessels` - official Maersk active-vessel reference data
 - `GET /api/maersk/locations` - official Maersk ports, terminals, cities, and location reference data
-- Evergreen ShipmentLink container/B/L tracking is supported through `POST /api/shipments/tracking/lookup`
+- Maersk, MSC, Evergreen, Hapag-Lloyd, and COSCO container/B/L tracking is supported through `POST /api/shipments/tracking/lookup`
 
 ## Maersk API
 

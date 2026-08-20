@@ -9,6 +9,7 @@ import {
 } from './maersk.js';
 import { evergreenTrackingUrl, fetchEvergreenTracking } from './evergreen.js';
 import { fetchHapagTracking } from './hapag.js';
+import { fetchCoscoTracking } from './cosco.js';
 const TRACKING_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MSC_TRACKING_PAGE = 'https://www.msc.com/en/track-a-shipment';
 const MSC_TRACKING_API = 'https://www.msc.com/api/feature/tools/TrackingInfo';
@@ -35,6 +36,8 @@ export const trackingCarrierLabel = (shippingLine) => {
         return 'Evergreen';
     if (line.includes('hapag') || line.includes('hlag'))
         return 'Hapag-Lloyd';
+    if (line.includes('cosco') || line.includes('coscon'))
+        return 'COSCO';
     return null;
 };
 const normalizeTrackingReference = (value) => String(value || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -86,6 +89,8 @@ export const trackingUrlForShipment = (shipment) => {
         return evergreenTrackingUrl();
     if (carrier === 'Hapag-Lloyd')
         return `https://www.hapag-lloyd.com/en/online-business/track/track-by-booking-solution.html?blno=${encodedTrackingReference}`;
+    if (carrier === 'COSCO')
+        return 'https://elines.coscoshipping.com/ebusiness/cargoTracking';
     return null;
 };
 const statusLabel = (status) => status
@@ -969,6 +974,20 @@ export async function fetchCarrierTracking(shipment, options = {}) {
             };
         }
     }
+    if (carrier === 'COSCO' && trackingReference) {
+        try {
+            return await fetchCoscoTracking(trackingReference);
+        }
+        catch (error) {
+            const message = String(error?.response?.data?.message || error?.message || error);
+            return {
+                status: statusLabel(shipment.status), location: shipment.destinationPort,
+                eta: shipment.eta ? new Date(shipment.eta) : null,
+                lastEvent: `COSCO tracking failed: ${message}`, rawDetails: null,
+                error: 'COSCO tracking failed', url,
+            };
+        }
+    }
     return {
         status: statusLabel(shipment.status),
         location: shipment.destinationPort,
@@ -1089,12 +1108,14 @@ export async function syncDueShipmentTrackings(carrier = null) {
                 shippingLine LIKE '%maersk%'
                 OR shippingLine LIKE '%mersk%'
               )`
-            : carrier === 'Evergreen'
+                : carrier === 'Evergreen'
                 ? `AND (
                 shippingLine LIKE '%evergreen%'
                 OR shippingLine LIKE '%shipmentlink%'
               )`
-                : '';
+                : carrier === 'COSCO'
+                    ? `AND shippingLine LIKE '%cosco%'`
+                    : '';
     const dueShipments = await db.query(`SELECT *
      FROM Shipment
      WHERE isActive = 1
@@ -1119,6 +1140,7 @@ export async function syncDueShipmentTrackings(carrier = null) {
          OR shippingLine LIKE '%mediterranean shipping%'
          OR shippingLine LIKE '%evergreen%'
          OR shippingLine LIKE '%shipmentlink%'
+         OR shippingLine LIKE '%cosco%'
        )
        AND status NOT IN ('delivered', 'closed')
        ${carrierFilter}
@@ -1137,12 +1159,16 @@ export async function syncDueShipmentTrackings(carrier = null) {
     return dueShipments.length;
 }
 export function startShipmentTrackingScheduler() {
-    void syncDueShipmentTrackings().catch((error) => {
-        console.error('Initial carrier tracking sync failed:', error);
-    });
-    setInterval(() => {
-        void syncDueShipmentTrackings().catch((error) => {
-            console.error('Scheduled carrier tracking sync failed:', error);
-        });
-    }, TRACKING_INTERVAL_MS);
+    const scheduleNextRun = () => {
+        const now = new Date();
+        const nextMidnight = new Date(now);
+        nextMidnight.setHours(24, 0, 0, 0);
+        setTimeout(async () => {
+            await syncDueShipmentTrackings().catch((error) => {
+                console.error('Scheduled carrier tracking sync failed:', error);
+            });
+            scheduleNextRun();
+        }, nextMidnight.getTime() - now.getTime());
+    };
+    scheduleNextRun();
 }

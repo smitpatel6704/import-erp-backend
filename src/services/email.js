@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import * as dotenv from 'dotenv';
+import { isJobEnabled } from './job-settings.js';
 
 dotenv.config({ quiet: true });
 
@@ -46,6 +47,7 @@ export async function verifyEmailConnection() {
 }
 
 export async function sendEmail({ to, subject, text, html }) {
+  if (!(await isJobEnabled('email_delivery'))) throw new Error('Email delivery job is switched off');
   const { config, transporter: smtpTransporter } = getTransporter();
 
   const recipients = Array.isArray(to) ? to.filter(Boolean) : [to].filter(Boolean);

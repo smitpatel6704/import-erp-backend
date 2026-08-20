@@ -1,6 +1,7 @@
 import { createId } from '@paralleldrive/cuid2';
 import { db } from '../db.js';
 import { isEmailConfigured, sendEmail } from './email.js';
+import { isJobEnabled } from './job-settings.js';
 
 const escapeHtml = (value) => String(value || '')
   .replaceAll('&', '&amp;')
@@ -74,7 +75,8 @@ export async function sendNotificationEmail(notification, recipients) {
 export async function createNotification(input) {
   const id = createId();
   const recipients = normalizeRecipients(input.recipients);
-  const emailEnabled = Boolean(input.emailEnabled || input.priority === 'high' || input.priority === 'critical');
+  const emailRequested = Boolean(input.emailEnabled || input.priority === 'high' || input.priority === 'critical');
+  const emailEnabled = emailRequested && await isJobEnabled('email_delivery');
 
   try {
     await db.execute(`
@@ -219,8 +221,14 @@ export async function runNotificationReminders() {
 let reminderTimer;
 export function startNotificationScheduler() {
   if (reminderTimer) return;
-  void runNotificationReminders().catch((error) => console.error('Notification reminder scan failed:', error));
-  reminderTimer = setInterval(() => {
-    void runNotificationReminders().catch((error) => console.error('Notification reminder scan failed:', error));
-  }, Number(process.env.NOTIFICATION_SCAN_INTERVAL_MS || 6 * 60 * 60 * 1000));
+  const scheduleNextRun = () => {
+    const now = new Date();
+    const nextMidnight = new Date(now);
+    nextMidnight.setHours(24, 0, 0, 0);
+    reminderTimer = setTimeout(async () => {
+      await runNotificationReminders().catch((error) => console.error('Notification reminder scan failed:', error));
+      scheduleNextRun();
+    }, nextMidnight.getTime() - now.getTime());
+  };
+  scheduleNextRun();
 }
