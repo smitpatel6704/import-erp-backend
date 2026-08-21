@@ -5,7 +5,7 @@ const trackingNo = process.argv[2] || '269868191';
 
 const browser = await chromium.launch({
   headless: true, // Render/server: true
-  channel: 'chrome',
+  // channel: 'chrome',
   args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
 });
 

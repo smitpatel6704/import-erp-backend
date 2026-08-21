@@ -1,4 +1,5 @@
 import { chromium } from 'playwright-core';
+import serverlessChromium from '@sparticuz/chromium';
 
 const DEFAULT_API_BASE_URL = 'https://api.maersk.com';
 const TOKEN_EXPIRY_SAFETY_MS = 60 * 1000;
@@ -180,6 +181,37 @@ const localChromeExecutablePath = () => process.env.CHROME_EXECUTABLE_PATH ||
     (process.platform === 'darwin'
         ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
         : undefined);
+const SCRAPER_TIMEOUT_MS = Math.min(
+    Math.max(Number(process.env.MAERSK_SCRAPER_TIMEOUT_MS) || 50000, 10000),
+    55000,
+);
+const MAERSK_VIEWPORT = { width: 1365, height: 768 };
+
+let serverlessExecutablePathPromise;
+
+const browserOptions = async () => {
+    if (isServerless() || process.platform === 'linux') {
+        // Keep extraction cached between warm Vercel invocations. A static import also
+        // makes sure Vercel's file tracer includes the compressed Chromium binaries.
+        serverlessChromium.setGraphicsMode = false;
+        serverlessExecutablePathPromise ||= serverlessChromium.executablePath();
+        return {
+            headless: true,
+            executablePath: await serverlessExecutablePathPromise,
+            args: [
+                ...serverlessChromium.args,
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+            ],
+        };
+    }
+
+    return {
+        headless: process.env.MAERSK_SCRAPER_HEADLESS !== 'false',
+        executablePath: localChromeExecutablePath(),
+        args: ['--disable-blink-features=AutomationControlled'],
+    };
+};
 
 /**
  * Scrape Maersk public tracking page using Playwright.
@@ -187,38 +219,39 @@ const localChromeExecutablePath = () => process.env.CHROME_EXECUTABLE_PATH ||
  * Returns the standard tracking result format.
  */
 export async function scrapeMaerskPublicTracking(trackingNo) {
-    console.log(`[Maersk Scraper] Starting tracking for ${trackingNo}...`);
-    const trackingUrl = `https://www.maersk.com/tracking/${encodeURIComponent(trackingNo)}`;
-
-    let executablePath = localChromeExecutablePath();
-    let additionalArgs = [];
-    if (isServerless() || process.platform === 'linux') {
-        const { default: serverlessChromium } = await import('@sparticuz/chromium');
-        executablePath = await serverlessChromium.executablePath();
-        additionalArgs = serverlessChromium.args;
+    const normalizedTrackingNo = String(trackingNo || '').trim().toUpperCase();
+    if (!/^(?:[A-Z0-9]{9}|[A-Z]{4}\d{7})$/.test(normalizedTrackingNo)) {
+        throw new MaerskApiError('Invalid Maersk tracking number', 400);
     }
 
+    console.log(`[Maersk Scraper] Starting tracking for ${normalizedTrackingNo}...`);
+    const trackingUrl = `https://www.maersk.com/tracking/${encodeURIComponent(normalizedTrackingNo)}`;
+    const deadline = Date.now() + SCRAPER_TIMEOUT_MS;
+    const remainingTime = (maximum) => Math.max(1000, Math.min(maximum, deadline - Date.now()));
+
     console.log('[Maersk Scraper] Launching browser...');
-    const browser = await chromium.launch({
-        headless: process.env.MAERSK_SCRAPER_HEADLESS !== 'false',
-        executablePath,
-        args: [
-            ...additionalArgs,
-            '--disable-blink-features=AutomationControlled',
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage'
-        ],
-    });
+    const browser = await chromium.launch(await browserOptions());
 
     try {
         const context = await browser.newContext({
             userAgent:
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
-            viewport: null,
+            viewport: MAERSK_VIEWPORT,
+            serviceWorkers: 'block',
         });
 
         const page = await context.newPage();
+        page.setDefaultTimeout(remainingTime(25000));
+
+        // Images, videos, and fonts add substantial bandwidth and memory but are not
+        // needed to render the text extracted below.
+        await page.route('**/*', async (route) => {
+            const type = route.request().resourceType();
+            if (type === 'image' || type === 'media' || type === 'font') {
+                return route.abort();
+            }
+            return route.continue();
+        });
 
         await page.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
@@ -233,12 +266,12 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
         console.log(`[Maersk Scraper] Navigating to ${trackingUrl}...`);
         await page.goto(trackingUrl, {
             waitUntil: 'domcontentloaded',
-            timeout: 120000,
+            timeout: remainingTime(25000),
         });
 
         // Dismiss cookie consent banner if it appears
         try {
-            await page.getByRole('button', { name: /allow all/i }).click({ timeout: 8000 });
+            await page.getByRole('button', { name: /allow all/i }).click({ timeout: remainingTime(2500) });
         } catch { /* Cookie banner may not appear */ }
 
         console.log('[Maersk Scraper] Waiting for tracking results to load...');
@@ -250,10 +283,10 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
                        text.includes("couldn't find") ||
                        text.includes("No results found");
             },
-            { timeout: 90000 },
+            { timeout: remainingTime(22000) },
         );
 
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(Math.min(750, Math.max(0, deadline - Date.now())));
 
         console.log('[Maersk Scraper] Content rendered, extracting text...');
         const text = await page.locator('body').innerText();
@@ -357,7 +390,7 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
         );
 
         const rawDetails = [
-            `Bill of Lading: ${billOfLading || trackingNo}`,
+            `Bill of Lading: ${billOfLading || normalizedTrackingNo}`,
             `From: ${originPort || '-'}`,
             `To: ${destinationPort || '-'}`,
             `Container: ${containerNumber || '-'}${rawContainerType ? ` | ${rawContainerType}` : ''}`,
@@ -389,6 +422,8 @@ export async function scrapeMaerskPublicTracking(trackingNo) {
         };
     } finally {
         console.log('[Maersk Scraper] Closing browser.');
-        await browser.close();
+        await browser.close().catch((error) => {
+            console.warn('[Maersk Scraper] Browser close failed:', error?.message || error);
+        });
     }
 }
