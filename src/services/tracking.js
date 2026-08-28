@@ -1032,8 +1032,16 @@ export async function syncShipmentTracking(id, force = false) {
         ? shipment.status
         : progressiveShipmentStatus(shipment.status, shipmentStatusFromCarrier(result));
     const statusChanged = nextStatus !== shipment.status;
+    const fetched = !result.error;
     await db.execute(`UPDATE Shipment
      SET status = ?,
+         eta = COALESCE(?, eta),
+         etd = COALESCE(?, etd),
+         vesselName = COALESCE(?, vesselName),
+         voyageNumber = COALESCE(?, voyageNumber),
+         originCountry = COALESCE(?, originCountry),
+         originPort = COALESCE(?, originPort),
+         destinationPort = COALESCE(?, destinationPort),
          carrierTrackingStatus = ?,
          carrierTrackingLocation = ?,
          carrierTrackingEta = ?,
@@ -1046,6 +1054,13 @@ export async function syncShipmentTracking(id, force = false) {
          updatedAt = ?
      WHERE id = ?`, [
         nextStatus,
+        fetched ? result.eta : null,
+        fetched ? result.etd : null,
+        fetched ? result.vesselName : null,
+        fetched ? result.voyageNumber : null,
+        fetched ? result.originCountry : null,
+        fetched ? result.origin : null,
+        fetched ? result.destination : null,
         result.status,
         result.location,
         result.eta,
@@ -1096,7 +1111,7 @@ export async function syncShipmentTracking(id, force = false) {
     const updated = await db.query('SELECT * FROM Shipment WHERE id = ?', [id]);
     return updated[0] || null;
 }
-export async function syncDueShipmentTrackings(carrier = null) {
+export async function syncDueShipmentTrackings(carrier = null, { force = false } = {}) {
     await ensureShipmentTrackingColumns();
     const carrierFilter = carrier === 'MSC'
         ? `AND (
@@ -1115,6 +1130,8 @@ export async function syncDueShipmentTrackings(carrier = null) {
               )`
                 : carrier === 'COSCO'
                     ? `AND shippingLine LIKE '%cosco%'`
+                    : carrier === 'Hapag-Lloyd'
+                        ? `AND (shippingLine LIKE '%hapag%' OR shippingLine LIKE '%hlag%')`
                     : '';
     const dueShipments = await db.query(`SELECT *
      FROM Shipment
@@ -1140,23 +1157,32 @@ export async function syncDueShipmentTrackings(carrier = null) {
          OR shippingLine LIKE '%mediterranean shipping%'
          OR shippingLine LIKE '%evergreen%'
          OR shippingLine LIKE '%shipmentlink%'
+         OR shippingLine LIKE '%hapag%'
+         OR shippingLine LIKE '%hlag%'
          OR shippingLine LIKE '%cosco%'
        )
        AND status NOT IN ('delivered', 'closed')
        ${carrierFilter}
-       AND (
+       ${force ? '' : `AND (
          carrierTrackingLastCheckedAt IS NULL
          OR carrierTrackingLastCheckedAt <= NOW() - INTERVAL '6 hours'
-       )`);
+       )`}`);
+    let succeeded = 0;
+    let failed = 0;
     for (const shipment of dueShipments) {
         try {
-            await syncShipmentTracking(shipment.id);
+            const updated = await syncShipmentTracking(shipment.id, force);
+            if (updated?.carrierTrackingError)
+                failed += 1;
+            else
+                succeeded += 1;
         }
         catch (error) {
+            failed += 1;
             console.error(`Scheduled tracking failed for shipment ${shipment.id}:`, error);
         }
     }
-    return dueShipments.length;
+    return { checked: dueShipments.length, succeeded, failed };
 }
 export function startShipmentTrackingScheduler() {
     const scheduleNextRun = () => {

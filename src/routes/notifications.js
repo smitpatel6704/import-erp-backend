@@ -1,6 +1,6 @@
 import { db } from '../db.js';
 import { Router } from 'express';
-import { createNotification, runNotificationReminders, sendNotificationEmail } from '../services/notifications.js';
+import { createNotification, runDocumentReminders, runEtaReminders, sendNotificationEmail } from '../services/notifications.js';
 import { getEmailConfiguration, verifyEmailConnection } from '../services/email.js';
 import { isJobEnabled } from '../services/job-settings.js';
 const router = Router();
@@ -22,9 +22,17 @@ const runReminders = async (req, res) => {
     try {
         if (process.env.CRON_SECRET && req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`)
             return res.status(401).json({ error: 'Unauthorized' });
-        if (!(await isJobEnabled('notification_reminders')))
-            return res.status(409).json({ error: 'Notification reminder job is switched off' });
-        return res.json({ data: await runNotificationReminders() });
+        const [etaEnabled, documentsEnabled] = await Promise.all([
+            isJobEnabled('eta_email_reminders'),
+            isJobEnabled('document_email_reminders'),
+        ]);
+        if (!etaEnabled && !documentsEnabled)
+            return res.status(409).json({ error: 'ETA and pending-document reminder jobs are switched off' });
+        const [eta, documents] = await Promise.all([
+            etaEnabled ? runEtaReminders() : Promise.resolve({ skipped: true }),
+            documentsEnabled ? runDocumentReminders() : Promise.resolve({ skipped: true }),
+        ]);
+        return res.json({ data: { eta, documents } });
     }
     catch (error) {
         console.error('Notification reminder error:', error);

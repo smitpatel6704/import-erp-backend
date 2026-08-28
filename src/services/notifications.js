@@ -157,7 +157,7 @@ export async function createNotification(input) {
   return { notification, duplicate: false };
 }
 
-export async function runNotificationReminders() {
+const reminderDayContext = () => {
   const today = new Date();
   const dayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const twoDaysStart = new Date(dayStart);
@@ -167,6 +167,11 @@ export async function runNotificationReminders() {
     String(dayStart.getMonth() + 1).padStart(2, '0'),
     String(dayStart.getDate()).padStart(2, '0'),
   ].join('-');
+  return { dayStart, twoDaysStart, dateKey };
+};
+
+export async function runEtaReminders() {
+  const { dayStart, twoDaysStart, dateKey } = reminderDayContext();
   let created = 0;
   const upcomingArrivals = await db.query(`
     SELECT id, shipmentNumber, eta, destinationPort, vesselName
@@ -221,6 +226,17 @@ export async function runNotificationReminders() {
     if (!result.duplicate) created += 1;
   }
 
+  return {
+    created,
+    upcomingArrivalsChecked: upcomingArrivals.length,
+    arrivalsChecked: arrivals.length,
+  };
+}
+
+export async function runDocumentReminders() {
+  const { dateKey } = reminderDayContext();
+  let created = 0;
+
   const pending = await db.query(`
     SELECT s.id, s.shipmentNumber, COUNT(dc.id) AS pendingCount
     FROM Shipment s
@@ -248,9 +264,19 @@ export async function runNotificationReminders() {
 
   return {
     created,
-    upcomingArrivalsChecked: upcomingArrivals.length,
-    arrivalsChecked: arrivals.length,
     pendingShipmentsChecked: pending.length,
+  };
+}
+
+export async function runNotificationReminders() {
+  const eta = await runEtaReminders();
+  const documents = await runDocumentReminders();
+  return {
+    ...eta,
+    ...documents,
+    created: eta.created + documents.created,
+    etaCreated: eta.created,
+    documentCreated: documents.created,
   };
 }
 

@@ -3,7 +3,8 @@ import { db } from '../db.js';
 export const JOB_IDS = [
   'daily',
   'carrier_tracking',
-  'notification_reminders',
+  'eta_email_reminders',
+  'document_email_reminders',
   'email_delivery',
   'workflow_automations',
 ];

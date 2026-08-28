@@ -1,6 +1,6 @@
 import { db } from '../db.js';
 import { getEmailConfiguration } from './email.js';
-import { getCronEmailRecipientSettings, runNotificationReminders } from './notifications.js';
+import { getCronEmailRecipientSettings, runDocumentReminders, runEtaReminders } from './notifications.js';
 import { syncDueShipmentTrackings } from './tracking.js';
 import { getJobEnabledStates, isJobEnabled } from './job-settings.js';
 
@@ -32,14 +32,24 @@ const JOBS = [
     description: 'Fetches Maersk, MSC, Evergreen, Hapag-Lloyd, and COSCO tracking data for due shipments.',
   },
   {
-    id: 'notification_reminders',
-    name: 'Notification and email reminders',
+    id: 'eta_email_reminders',
+    name: 'ETA email reminders',
     path: 'backend scheduler',
     schedule: 'Once daily at 12:00 AM',
     timezone: 'Asia/Kolkata / server local',
     source: 'midnight timer + daily cron',
     runnable: true,
-    description: 'Creates ETA and pending-document reminders. High priority reminders are sent by email when SMTP is configured.',
+    description: 'Creates upcoming ETA reminders and sends arrival emails when SMTP is configured.',
+  },
+  {
+    id: 'document_email_reminders',
+    name: 'Pending-document email reminders',
+    path: 'backend scheduler',
+    schedule: 'Once daily at 12:00 AM',
+    timezone: 'Asia/Kolkata / server local',
+    source: 'midnight timer + daily cron',
+    runnable: true,
+    description: 'Checks required shipment documents and sends pending-document emails when SMTP is configured.',
   },
   {
     id: 'email_delivery',
@@ -63,7 +73,7 @@ const JOBS = [
   },
 ];
 
-let notificationTimer;
+let reminderTimer;
 let carrierTrackingTimer;
 const millisecondsUntilNextMidnight = (now = new Date()) => {
   const nextMidnight = new Date(now);
@@ -166,25 +176,40 @@ const runTrackedJob = async (id, handler, { triggeredBy = 'manual', userId = nul
 };
 
 export const runCarrierTrackingJob = async (options = {}) =>
-  runTrackedJob('carrier_tracking', async () => ({
-    carrierShipmentsChecked: await syncDueShipmentTrackings(),
+  runTrackedJob('carrier_tracking', async () => {
+    const carrierTracking = await syncDueShipmentTrackings(null, { force: true });
+    return {
+      carrierShipmentsChecked: carrierTracking.checked,
+      carrierShipmentsSucceeded: carrierTracking.succeeded,
+      carrierShipmentsFailed: carrierTracking.failed,
+    };
+  }, options);
+
+export const runEtaReminderJob = async (options = {}) =>
+  runTrackedJob('eta_email_reminders', async () => ({
+    notifications: await runEtaReminders(),
   }), options);
 
-export const runNotificationReminderJob = async (options = {}) =>
-  runTrackedJob('notification_reminders', async () => ({
-    notifications: await runNotificationReminders(),
+export const runDocumentReminderJob = async (options = {}) =>
+  runTrackedJob('document_email_reminders', async () => ({
+    notifications: await runDocumentReminders(),
   }), options);
 
 export const runDailyCronJobs = async ({ triggeredBy = 'cron', userId = null } = {}) =>
   runTrackedJob('daily', async () => {
     const carrierTracking = await runCarrierTrackingJob({ triggeredBy, userId });
-    const notificationReminders = await runNotificationReminderJob({ triggeredBy, userId });
+    const etaEmailReminders = await runEtaReminderJob({ triggeredBy, userId });
+    const documentEmailReminders = await runDocumentReminderJob({ triggeredBy, userId });
     return {
       carrierShipmentsChecked: carrierTracking.carrierShipmentsChecked,
-      notifications: notificationReminders.notifications,
+      notifications: {
+        eta: etaEmailReminders.notifications,
+        documents: documentEmailReminders.notifications,
+      },
       jobs: {
         carrierTracking,
-        notificationReminders,
+        etaEmailReminders,
+        documentEmailReminders,
       },
     };
   }, { triggeredBy, userId });
@@ -192,7 +217,8 @@ export const runDailyCronJobs = async ({ triggeredBy = 'cron', userId = null } =
 export const runCronJobById = async (jobId, options = {}) => {
   if (jobId === 'daily') return runDailyCronJobs(options);
   if (jobId === 'carrier_tracking') return runCarrierTrackingJob(options);
-  if (jobId === 'notification_reminders') return runNotificationReminderJob(options);
+  if (jobId === 'eta_email_reminders') return runEtaReminderJob(options);
+  if (jobId === 'document_email_reminders') return runDocumentReminderJob(options);
   const error = new Error('This automation is event-triggered and cannot be run manually.');
   error.status = 400;
   throw error;
@@ -210,15 +236,18 @@ export function startCronJobSchedulers() {
     };
     scheduleNextCarrierTrackingRun();
   }
-  if (!notificationTimer) {
-    const scheduleNextNotificationRun = () => {
-      notificationTimer = setTimeout(async () => {
-        await runNotificationReminderJob({ triggeredBy: 'scheduler' }).catch((error) => {
-          console.error('Notification reminder scan failed:', error);
+  if (!reminderTimer) {
+    const scheduleNextReminderRun = () => {
+      reminderTimer = setTimeout(async () => {
+        await Promise.all([
+          runEtaReminderJob({ triggeredBy: 'scheduler' }),
+          runDocumentReminderJob({ triggeredBy: 'scheduler' }),
+        ]).catch((error) => {
+          console.error('Email reminder scan failed:', error);
         });
-        scheduleNextNotificationRun();
+        scheduleNextReminderRun();
       }, millisecondsUntilNextMidnight());
     };
-    scheduleNextNotificationRun();
+    scheduleNextReminderRun();
   }
 }
