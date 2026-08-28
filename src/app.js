@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import swaggerUi from 'swagger-ui-express';
 import dotenv from 'dotenv';
 dotenv.config({ quiet: true });
 import activitiesRouter from './routes/activities.js';
@@ -26,6 +27,7 @@ import { auditMutation } from './services/audit.js';
 import { authenticate, requireAdmin, requireModulePermission } from './services/auth.js';
 import { sendStoredDocumentFile } from './services/document-files.js';
 import { pool } from './db.js';
+import { openApiDocument } from './openapi.js';
 const app = express();
 const isProduction = () => process.env.NODE_ENV === 'production' || process.env.VERCEL;
 const allowedOrigins = () => new Set(
@@ -97,6 +99,12 @@ app.use(cors({
 }));
 app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, max: 600, keyPrefix: 'api' }));
 app.use(express.json({ limit: '4mb' }));
+if (!isProduction()) {
+    app.get('/api-docs.json', (_req, res) => res.json(openApiDocument));
+    app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiDocument, {
+        customSiteTitle: 'Nexport ERP API Docs',
+    }));
+}
 app.get('/uploads/:filename', authenticate, requireModulePermission('documents'), sendStoredDocumentFile);
 app.get('/api/uploads/:filename', authenticate, requireModulePermission('documents'), sendStoredDocumentFile);
 app.get('/api/health', (_req, res) => {
