@@ -25,7 +25,7 @@ import cronRouter from './routes/cron.js';
 import maerskRouter from './routes/maersk.js';
 import { auditMutation } from './services/audit.js';
 import { authenticate, requireAdmin, requireModulePermission } from './services/auth.js';
-import { sendStoredDocumentFile } from './services/document-files.js';
+import { readDocumentFileBuffer, sendStoredDocumentFile } from './services/document-files.js';
 import { pool } from './db.js';
 import { openApiDocument } from './openapi.js';
 const app = express();
@@ -115,6 +115,18 @@ app.get('/api/health', (_req, res) => {
 app.get('/api/branding/logo/:mode', async (req, res) => {
     try {
         const mode = ['light', 'dark', 'collapsed'].includes(req.params.mode) ? req.params.mode : 'light';
+        const settingKey = `brand_logo_${mode}`;
+        const { rows: settings } = await pool.query('SELECT "value" FROM "AppSetting" WHERE "key" = $1', [settingKey]);
+        const blobUrl = settings[0]?.value;
+        if (blobUrl?.includes('.blob.vercel-storage.com')) {
+            const buffer = await readDocumentFileBuffer(blobUrl);
+            if (!buffer) return res.status(404).end();
+            const extension = new URL(blobUrl).pathname.split('.').pop()?.toLowerCase();
+            const mimeTypes = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml' };
+            res.setHeader('Content-Type', mimeTypes[extension] || 'image/png');
+            res.setHeader('Cache-Control', 'public, max-age=3600');
+            return res.status(200).send(buffer);
+        }
         const { rows } = await pool.query('SELECT "fileData", "mimeType" FROM "BrandLogo" WHERE "mode" = $1', [mode]);
         if (!rows?.length) {
             res.setHeader('Cache-Control', 'public, max-age=300');
@@ -134,7 +146,12 @@ app.get('/api/branding/logo/:mode', async (req, res) => {
 
 app.get('/api/branding/logos', async (_req, res) => {
     try {
-        const { rows } = await pool.query('SELECT "mode" FROM "BrandLogo"');
+        const { rows } = await pool.query(`
+          SELECT "mode" FROM "BrandLogo"
+          UNION
+          SELECT REPLACE("key", 'brand_logo_', '') AS "mode" FROM "AppSetting"
+          WHERE "key" LIKE 'brand_logo_%' AND "value" <> ''
+        `);
         const exists = { light: false, dark: false, collapsed: false };
         for (const row of rows) {
             if (exists.hasOwnProperty(row.mode)) exists[row.mode] = true;

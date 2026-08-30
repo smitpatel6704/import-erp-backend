@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { Buffer } from 'node:buffer';
-import { db, pool } from '../db.js';
+import { db } from '../db.js';
 import { createId } from '@paralleldrive/cuid2';
 import { getCronDashboardStatus, runCronJobById } from '../services/cron-jobs.js';
 import { setJobEnabled } from '../services/job-settings.js';
 import { setCronEmailRecipients } from '../services/notifications.js';
+import { deleteStoredFile, storeFileBuffer } from '../services/document-files.js';
 const router = Router();
 const BRAND_LOGO_KEYS = {
     light: 'brand_logo_light',
@@ -85,9 +86,9 @@ router.get('/brand-logos', async (_req, res) => {
         );
         const logos = { light: '', dark: '', collapsed: '' };
         rows.forEach((row) => {
-            if (row.key === BRAND_LOGO_KEYS.light) logos.light = row.value || '';
-            if (row.key === BRAND_LOGO_KEYS.dark) logos.dark = row.value || '';
-            if (row.key === BRAND_LOGO_KEYS.collapsed) logos.collapsed = row.value || '';
+            if (row.key === BRAND_LOGO_KEYS.light && row.value) logos.light = '/api/branding/logo/light';
+            if (row.key === BRAND_LOGO_KEYS.dark && row.value) logos.dark = '/api/branding/logo/dark';
+            if (row.key === BRAND_LOGO_KEYS.collapsed && row.value) logos.collapsed = '/api/branding/logo/collapsed';
         });
         return res.json({ data: logos });
     }
@@ -106,39 +107,33 @@ router.put('/brand-logos', async (req, res) => {
             return res.status(400).json({ error: 'Unsupported logo format or logo is too large' });
         }
         const key = BRAND_LOGO_KEYS[mode];
+        const [previous] = await db.query('SELECT "value" FROM "AppSetting" WHERE "key" = ?', [key]);
         if (!logoDataUrl) {
             await Promise.all([
                 db.execute('DELETE FROM "AppSetting" WHERE "key" = ?', [key]),
                 db.execute('DELETE FROM "BrandLogo" WHERE "mode" = ?', [mode]),
             ]);
+            await deleteStoredFile(previous?.value);
             return res.json({ data: { mode, url: '' } });
         }
-        // Parse data URL and store as binary in BrandLogo table
+        // Decode the browser preview and move the actual image into private Blob storage.
         const match = logoDataUrl.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
         if (!match) {
             return res.status(400).json({ error: 'Invalid image data URL' });
         }
         const mimeType = match[1];
         const buffer = Buffer.from(match[2], 'base64');
-        await Promise.all([
-            db.execute(`
+        const blob = await storeFileBuffer({ buffer, fileName: `${mode}-logo.${mimeType === 'image/svg+xml' ? 'svg' : mimeType.split('/')[1]}`, contentType: mimeType, folder: 'brand-logos' });
+        await db.execute(`
                 INSERT INTO "AppSetting" ("key", "value", "updatedBy", "updatedAt")
                 VALUES (?, ?, ?, NOW())
                 ON CONFLICT ("key") DO UPDATE
                 SET "value" = EXCLUDED."value",
                     "updatedBy" = EXCLUDED."updatedBy",
                     "updatedAt" = NOW()
-            `, [key, logoDataUrl, req.user?.id || null]),
-            pool.query(
-                `INSERT INTO "BrandLogo" ("mode", "fileData", "mimeType", "updatedAt")
-                 VALUES ($1, $2, $3, NOW())
-                 ON CONFLICT ("mode") DO UPDATE
-                 SET "fileData" = EXCLUDED."fileData",
-                     "mimeType" = EXCLUDED."mimeType",
-                     "updatedAt" = NOW()`,
-                [mode, buffer, mimeType]
-            ),
-        ]);
+            `, [key, blob.url, req.user?.id || null]);
+        await db.execute('DELETE FROM "BrandLogo" WHERE "mode" = ?', [mode]);
+        await deleteStoredFile(previous?.value);
         return res.json({ data: { mode, url: `/api/branding/logo/${mode}` } });
     }
     catch (error) {
@@ -151,10 +146,12 @@ router.put('/brand-logos', async (req, res) => {
 router.delete('/brand-logos/:mode', async (req, res) => {
     try {
         const mode = normalizeLogoMode(req.params.mode);
+        const [previous] = await db.query('SELECT "value" FROM "AppSetting" WHERE "key" = ?', [BRAND_LOGO_KEYS[mode]]);
         await Promise.all([
             db.execute('DELETE FROM "AppSetting" WHERE "key" = ?', [BRAND_LOGO_KEYS[mode]]),
             db.execute('DELETE FROM "BrandLogo" WHERE "mode" = ?', [mode]),
         ]);
+        await deleteStoredFile(previous?.value);
         return res.json({ data: { mode, url: '' } });
     }
     catch (error) {

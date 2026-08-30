@@ -3,13 +3,12 @@ import { db } from '../db.js';
 import { createId } from '@paralleldrive/cuid2';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
-import { randomBytes } from 'crypto';
-import os from 'os';
 import { PDFDocument } from 'pdf-lib';
 import { createNotification, notificationRecipients } from '../services/notifications.js';
 import {
     readDocumentFileBuffer,
+    deleteStoredFile,
+    storeFileBuffer,
     storeUploadedDocumentFile,
 } from '../services/document-files.js';
 const router = Router();
@@ -42,24 +41,8 @@ const buildMergedDocumentName = async (shipmentId, orderedDocuments) => {
     ].filter(Boolean);
     return `${parts.join('_')}.pdf`;
 };
-// Configure Multer for local storage
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadDir = process.env.VERCEL
-            ? path.join(os.tmpdir(), 'uploads')
-            : path.resolve(process.cwd(), 'uploads');
-        if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir, { recursive: true });
-        }
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, `${file.fieldname}-${Date.now()}-${randomBytes(8).toString('hex')}${path.extname(file.originalname).toLowerCase()}`);
-    }
-});
 const allowedUploadTypes = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp']);
-const hasAllowedFileSignature = (filePath, mimeType) => {
-    const bytes = fs.readFileSync(filePath);
+const hasAllowedFileSignature = (bytes, mimeType) => {
     if (mimeType === 'application/pdf')
         return bytes.subarray(0, 5).toString('ascii') === '%PDF-';
     if (mimeType === 'image/png')
@@ -71,7 +54,7 @@ const hasAllowedFileSignature = (filePath, mimeType) => {
     return false;
 };
 const upload = multer({
-    storage: storage,
+    storage: multer.memoryStorage(),
     limits: { fileSize: 5 * 1024 * 1024, files: 1 },
     fileFilter: (_req, file, cb) => {
         if (allowedUploadTypes.has(file.mimetype))
@@ -82,8 +65,7 @@ const upload = multer({
 const uploadDocumentFile = (req, res, next) => {
     upload.single('file')(req, res, (error) => {
         if (!error) {
-            if (req.file && !hasAllowedFileSignature(req.file.path, req.file.mimetype)) {
-                fs.unlink(req.file.path, () => {});
+            if (req.file && !hasAllowedFileSignature(req.file.buffer, req.file.mimetype)) {
                 return res.status(400).json({ error: 'Uploaded file content does not match an allowed PDF or image type' });
             }
             return next();
@@ -159,16 +141,11 @@ router.post('/shipment/:id/merge', async (req, res) => {
             pages.forEach((page) => merged.addPage(page));
         }
         const bundleId = createId();
-        const filename = `bundle-${shipmentId}-${Date.now()}.pdf`;
-        const uploadDir = process.env.VERCEL
-            ? path.join(os.tmpdir(), 'uploads')
-            : path.resolve(process.cwd(), 'uploads');
-        fs.mkdirSync(uploadDir, { recursive: true });
         const mergedBytes = await merged.save();
         const mergedBuffer = Buffer.from(mergedBytes);
-        fs.writeFileSync(path.join(uploadDir, filename), mergedBuffer);
-        const fileUrl = `/uploads/${filename}`;
         const downloadName = await buildMergedDocumentName(shipmentId, orderedDocuments);
+        const blob = await storeFileBuffer({ buffer: mergedBuffer, fileName: downloadName, contentType: 'application/pdf', folder: 'document-bundles' });
+        const fileUrl = blob.url;
         await db.execute(`
           INSERT INTO DocumentBundle (id, shipmentId, name, fileUrl, documentIds, createdBy, createdAt)
           VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -210,6 +187,22 @@ router.get('/bundles/:id/download', async (req, res) => {
     catch (error) {
         console.error('Bundle download error:', error);
         return res.status(500).json({ error: 'Failed to download bundle' });
+    }
+});
+router.get('/:id/download', async (req, res) => {
+    try {
+        const [document] = await db.query('SELECT fileUrl, fileType FROM ShipmentDocument WHERE id = ?', [req.params.id]);
+        if (!document?.fileUrl) return res.status(404).json({ error: 'Document not found' });
+        const buffer = await readDocumentFileBuffer(document.fileUrl);
+        if (!buffer) return res.status(404).json({ error: 'Document file not found' });
+        res.setHeader('Content-Type', document.fileType || 'application/octet-stream');
+        res.setHeader('Content-Length', String(buffer.length));
+        res.setHeader('Content-Disposition', req.query.download === '1' ? 'attachment' : 'inline');
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        return res.send(buffer);
+    } catch (error) {
+        console.error('Document download error:', error);
+        return res.status(500).json({ error: 'Failed to download document' });
     }
 });
 // ============================================
@@ -312,14 +305,12 @@ router.post('/shipment/:id/upload', uploadDocumentFile, async (req, res) => {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
-        // Create a local URL for the file
-        // Note: In production, you'd use a full URL like https://api.yourdomain.com/uploads/...
-        const fileUrl = `/uploads/${req.file.filename}`;
         const fileType = req.file.mimetype;
         const fileSize = req.file.size;
-        await storeUploadedDocumentFile(req.file, fileUrl);
+        const blob = await storeUploadedDocumentFile(req.file);
+        const fileUrl = blob.url;
         // Check if record already exists
-        const existing = await db.query('SELECT id FROM ShipmentDocument WHERE shipmentId = ? AND checklistId = ?', [shipmentId, checklistId]);
+        const existing = await db.query('SELECT id, fileUrl FROM ShipmentDocument WHERE shipmentId = ? AND checklistId = ?', [shipmentId, checklistId]);
         if (existing && existing.length > 0) {
             // Update existing
             const docId = existing[0].id;
@@ -328,6 +319,7 @@ router.post('/shipment/:id/upload', uploadDocumentFile, async (req, res) => {
         SET fileUrl = ?, fileType = ?, fileSize = ?, status = 'uploaded', uploadedAt = NOW(), expiryDate = ?, remarks = ?, updatedAt = NOW()
         WHERE id = ?
       `, [fileUrl, fileType, fileSize, expiryDate ? new Date(expiryDate) : null, remarks, docId]);
+            await deleteStoredFile(existing[0].fileUrl);
         }
         else {
             // Create new
@@ -337,7 +329,8 @@ router.post('/shipment/:id/upload', uploadDocumentFile, async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, 'uploaded', NOW(), ?, ?, NOW(), NOW())
       `, [id, shipmentId, checklistId, fileUrl, fileType, fileSize, expiryDate ? new Date(expiryDate) : null, remarks]);
         }
-        return res.json({ success: true, fileUrl });
+        const [saved] = await db.query('SELECT id FROM ShipmentDocument WHERE shipmentId = ? AND checklistId = ?', [shipmentId, checklistId]);
+        return res.json({ success: true, fileUrl: `/api/shipment-documents/${saved.id}/download` });
     }
     catch (err) {
         console.error('Document upload POST error:', err);

@@ -19,6 +19,18 @@ For Gmail, enable 2-Step Verification on the Google account, create an App
 Password, and put that 16-character value in `SMTP_PASS`. The notification
 screen can verify the SMTP connection and send or retry individual emails.
 
+## Vercel Blob file storage
+
+Shipment PDFs, uploaded images, merged document bundles, and brand logos are stored in a private Vercel Blob store. Connect a private Blob store to the project and configure:
+
+```env
+BLOB_READ_WRITE_TOKEN=your_rotated_vercel_blob_token
+# Added automatically by Vercel when the store is connected:
+BLOB_STORE_ID=your_blob_store_id
+```
+
+Do not commit the token. Blob URLs are saved as metadata in PostgreSQL; protected documents are downloaded through authenticated API routes.
+
 ## Added APIs
 
 - `GET /api/dashboard` - stage totals, monthly/yearly value trends, supplier/port/country data

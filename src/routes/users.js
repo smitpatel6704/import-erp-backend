@@ -4,6 +4,7 @@ import { db, pool } from '../db.js';
 import { createInvitationToken, hashPassword, normalizePermissions } from '../services/auth.js';
 import { isEmailConfigured, sendEmail } from '../services/email.js';
 import { buildInvitationEmail } from '../services/invitation-email.js';
+import { readDocumentFileBuffer } from '../services/document-files.js';
 
 const router = Router();
 const appUrl = () => {
@@ -17,14 +18,19 @@ const sendInvitation = async (user, token) => {
   const inviteUrl = `${appUrl()}/setup-password?token=${encodeURIComponent(token)}`;
   if (!isEmailConfigured()) return { inviteUrl, emailSent: false, emailError: 'SMTP is not configured' };
   try {
-    const { rows: logos } = await pool.query(`
-      SELECT "fileData", "mimeType"
-      FROM "BrandLogo"
-      WHERE "mode" IN ('light', 'collapsed', 'dark')
-      ORDER BY CASE "mode" WHEN 'light' THEN 1 WHEN 'collapsed' THEN 2 ELSE 3 END
-      LIMIT 1
-    `);
-    const logo = logos[0];
+    const { rows: logoSettings } = await pool.query(`SELECT "value" FROM "AppSetting" WHERE "key" IN ('brand_logo_light', 'brand_logo_collapsed', 'brand_logo_dark') ORDER BY CASE "key" WHEN 'brand_logo_light' THEN 1 WHEN 'brand_logo_collapsed' THEN 2 ELSE 3 END LIMIT 1`);
+    let logo = null;
+    if (logoSettings[0]?.value?.includes('.blob.vercel-storage.com')) {
+      const content = await readDocumentFileBuffer(logoSettings[0].value);
+      if (content) {
+        const extension = new URL(logoSettings[0].value).pathname.split('.').pop()?.toLowerCase();
+        const mimeTypes = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml' };
+        logo = { fileData: content, mimeType: mimeTypes[extension] || 'image/png' };
+      }
+    } else {
+      const { rows: legacyLogos } = await pool.query(`SELECT "fileData", "mimeType" FROM "BrandLogo" WHERE "mode" IN ('light', 'collapsed', 'dark') ORDER BY CASE "mode" WHEN 'light' THEN 1 WHEN 'collapsed' THEN 2 ELSE 3 END LIMIT 1`);
+      logo = legacyLogos[0] || null;
+    }
     const logoCid = logo ? 'nexport-brand-logo' : null;
     const email = buildInvitationEmail({ user, inviteUrl, logoCid });
     await sendEmail({
