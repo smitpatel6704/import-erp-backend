@@ -3,6 +3,7 @@ import { createId } from '@paralleldrive/cuid2';
 import { db, pool } from '../db.js';
 import { createInvitationToken, hashPassword, normalizePermissions } from '../services/auth.js';
 import { isEmailConfigured, sendEmail } from '../services/email.js';
+import { buildInvitationEmail } from '../services/invitation-email.js';
 
 const router = Router();
 const appUrl = () => {
@@ -12,24 +13,29 @@ const appUrl = () => {
   return value.replace(/\/$/, '');
 };
 
-const escapeHtml = (unsafe) => {
-  return String(unsafe)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-};
-
 const sendInvitation = async (user, token) => {
   const inviteUrl = `${appUrl()}/setup-password?token=${encodeURIComponent(token)}`;
   if (!isEmailConfigured()) return { inviteUrl, emailSent: false, emailError: 'SMTP is not configured' };
   try {
+    const { rows: logos } = await pool.query(`
+      SELECT "fileData", "mimeType"
+      FROM "BrandLogo"
+      WHERE "mode" IN ('light', 'collapsed', 'dark')
+      ORDER BY CASE "mode" WHEN 'light' THEN 1 WHEN 'collapsed' THEN 2 ELSE 3 END
+      LIMIT 1
+    `);
+    const logo = logos[0];
+    const logoCid = logo ? 'nexport-brand-logo' : null;
+    const email = buildInvitationEmail({ user, inviteUrl, logoCid });
     await sendEmail({
       to: user.email,
-      subject: 'Create your Nexport ERP password',
-      text: `Hello ${user.name}, create your Nexport ERP password using this link: ${inviteUrl}`,
-      html: `<p>Hello ${escapeHtml(user.name)},</p><p>Your Nexport ERP account has been created.</p><p><a href="${escapeHtml(inviteUrl)}">Create your password</a></p><p>This link expires in 24 hours.</p>`,
+      ...email,
+      attachments: logo ? [{
+        filename: `brand-logo.${logo.mimeType === 'image/svg+xml' ? 'svg' : (logo.mimeType || 'image/png').split('/')[1]}`,
+        content: logo.fileData,
+        contentType: logo.mimeType || 'image/png',
+        cid: logoCid,
+      }] : undefined,
     });
     return { inviteUrl, emailSent: true };
   } catch (error) {
@@ -103,7 +109,7 @@ router.post('/', async (req, res) => {
 
 router.post('/:id/resend-invitation', async (req, res) => {
   try {
-    const [user] = await db.query('SELECT id, email, name, isActive FROM User WHERE id = ?', [req.params.id]);
+    const [user] = await db.query('SELECT id, email, name, role, isActive FROM User WHERE id = ?', [req.params.id]);
     if (!user || !user.isActive) return res.status(404).json({ error: 'User not found' });
     const invitation = createInvitationToken();
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);

@@ -46,7 +46,7 @@ export async function verifyEmailConnection() {
   return getEmailConfiguration();
 }
 
-export async function sendEmail({ to, subject, text, html }) {
+export async function sendEmail({ to, subject, text, html, attachments }) {
   if (!(await isJobEnabled('email_delivery'))) throw new Error('Email delivery job is switched off');
   const { config, transporter: smtpTransporter } = getTransporter();
 
@@ -59,5 +59,6 @@ export async function sendEmail({ to, subject, text, html }) {
     subject,
     text,
     html,
+    attachments,
   });
 }
